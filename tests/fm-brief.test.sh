@@ -1567,6 +1567,12 @@ test_ship_pr_media_contract_by_mode() {
     "no-mistakes brief must carry the image lines through --intent"
   assert_no_grep "Put those image lines in the PR body you open" "$brief" \
     "no-mistakes brief must not tell the worker to write the pipeline-owned PR body"
+  assert_grep "Attaching an image as pipeline run evidence never substitutes for that" "$brief" \
+    "no-mistakes brief must say evidence attachments do not replace the committed-blob route"
+  assert_grep "local file: /var/folders/" "$brief" \
+    "no-mistakes brief must name the machine-local rendering an evidence attachment produces"
+  assert_grep "inside a section it rewrites every run, so it cannot be hand-fixed afterwards" "$brief" \
+    "no-mistakes brief must explain why the evidence rendering cannot be hand-fixed"
 
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" media-direct-c2 some-proj --mode direct-PR >/dev/null 2>&1
   brief="$home/data/media-direct-c2/brief.md"
@@ -1576,6 +1582,8 @@ test_ship_pr_media_contract_by_mode() {
   assert_grep "Put those image lines in the PR body you open" "$brief" \
     "direct-PR brief must carry the image lines in the PR body"
   assert_no_grep "--intent" "$brief" "direct-PR brief must not mention --intent"
+  assert_no_grep "pipeline run evidence" "$brief" \
+    "direct-PR brief has no pipeline evidence channel and must not warn about one"
 
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" media-local-c3 some-proj --mode local-only >/dev/null 2>&1
   brief="$home/data/media-local-c3/brief.md"
@@ -1594,6 +1602,33 @@ test_ship_pr_media_contract_by_mode() {
   pass "fm-brief.sh: PR media contract is inline-image only and carried per delivery mode"
 }
 
+# Three lanes on 2026-08-23 each invented a wait that outlived what it waited
+# for - a poll on a file never written, an until-loop on a machine-wide pgrep
+# matching sibling lanes and its own shell, a sleep loop around an unchanging
+# status call - and all looked healthy while doing nothing. Ship and scout
+# rules now carry the wait-discipline rule; a secondmate charter runs its own
+# firstmate home and takes no worker rules, so it is exempt.
+test_wait_discipline_rule_in_ship_and_scout() {
+  local home kind brief
+  home="$TMP_ROOT/wait-discipline-home"
+  mkdir -p "$home/data"
+  for kind in ship scout; do
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "wait-rule-$kind" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "wait-rule-$kind" some-proj --mode no-mistakes >/dev/null 2>&1
+    fi
+    brief="$home/data/wait-rule-$kind/brief.md"
+    assert_grep "Wait only on your own work: watch your own process id or your own output artifact" "$brief" \
+      "$kind brief lost the own-pid-or-own-artifact wait rule"
+    assert_grep "machine-wide process match such as \`pgrep -f\` - that matches sibling lanes and your own" "$brief" \
+      "$kind brief must ban machine-wide process matches and say why"
+    assert_grep "re-read its result artifact: a result already on disk means the wait is over" "$brief" \
+      "$kind brief must require re-reading the artifact before reporting still-running"
+  done
+  pass "fm-brief.sh: ship and scout rules carry the wait-discipline contract"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -1604,6 +1639,7 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_ship_pr_media_contract_by_mode
+test_wait_discipline_rule_in_ship_and_scout
 test_no_mistakes_dod_wording
 test_no_mistakes_dod_green_detection
 test_pr_based_dod_requires_non_draft

@@ -102,10 +102,16 @@
 # repository; local filesystem paths are forbidden because no reviewer can open
 # them. Private-repo inline rendering was confirmed by direct captain
 # verification on 2026-08-18 - a signed-in browser displayed a blob ?raw=true
-# image on the private Scripe-GmbH/scripe repository. no-mistakes mode carries those image lines in --intent, the only worker
-# text the pipeline keeps verbatim when it regenerates the PR body; direct-PR
-# mode writes them into the PR body. local-only has no PR, so the section is
-# omitted.
+# image on the private Scripe-GmbH/scripe repository. no-mistakes mode carries
+# those image lines in --intent, the only worker text the pipeline keeps verbatim
+# when it regenerates the PR body; direct-PR mode writes them into the PR body.
+# local-only has no PR, so the section is omitted.
+# The no-mistakes carry also warns that attaching an image as pipeline run
+# evidence renders as a machine-local "local file:" path in the PR body and
+# never substitutes for the committed-blob route.
+# Ship and scout rules carry a wait-discipline rule: wait on your own pid or
+# your own output artifact, never a machine-wide process match, and re-read the
+# artifact before reporting anything as still running.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
@@ -605,6 +611,11 @@ IFS= read -r -d '' SHARED_INFRA_RULE <<'EOF' || true
    `blocked [at=<epoch>]: {what you need}` and stop; firstmate arranges it.
 EOF
 SHARED_INFRA_RULE=${SHARED_INFRA_RULE%$'\n'}
+WAIT_OWN_WORK_RULE='8. Wait only on your own work: watch your own process id or your own output artifact, never a
+   machine-wide process match such as `pgrep -f` - that matches sibling lanes and your own
+   shell, and can outlive the thing you meant to wait for. Before reporting anything as still
+   running, re-read its result artifact: a result already on disk means the wait is over,
+   whatever the process table says.'
 
 if [ -n "$BASE_BRANCH" ]; then
   SETUP_BASE="You are in a disposable git worktree of $REPO, at a detached HEAD on a clean copy of its base branch.
@@ -653,6 +664,7 @@ $CREWMATE_PAUSE_INSTRUCTIONS
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
 $SHARED_INFRA_RULE
+$WAIT_OWN_WORK_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
 
@@ -687,7 +699,9 @@ case "$MODE" in
   *)  # no-mistakes
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
-    MEDIA_CARRY="Put those image lines in your \`--intent\`: the pipeline keeps the intent verbatim in the PR body and rewrites every other section on each run."
+    MEDIA_CARRY="Put those image lines in your \`--intent\`: the pipeline keeps the intent verbatim in the PR body and rewrites every other section on each run.
+Attaching an image as pipeline run evidence never substitutes for that: the pipeline renders an evidence attachment in the PR body as \`local file: /var/folders/...\`, a machine-local path no reviewer can open, inside a section it rewrites every run, so it cannot be hand-fixed afterwards.
+Any image that must appear in the PR body goes through the committed \`.github/pr-media/$ID/\` file and its blob URL carried in \`--intent\`."
     ;;
 esac
 RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exit 1
@@ -750,6 +764,7 @@ $ASK_USER_BLOCK
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
 $SHARED_INFRA_RULE
+$WAIT_OWN_WORK_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
 
