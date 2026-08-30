@@ -392,7 +392,10 @@ Claude drops that exit 2 when it terminated the hook at the configured timeout i
 
 The first fresh exhausted-failure epoch preserves its handoff without consuming a blocked-stop count.
 Later fresh failed epochs advance the same monotonic progression instead of resetting it.
-When none of those proofs appears, the guard re-blocks up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override).
+When none of those proofs appears, the guard restores the standing cycle itself before spending any re-block: Claude runs the whole Stop batch in parallel and a guard exit 2 never suppresses the `asyncRewake` sibling ([`verification/supervision.md`](verification/supervision.md#turn-end-guard) records the dated semantics), so an unclaimed epoch at this point means the auto-arm fired and is wedged, gated, or dead, and re-blocking alone can never bring supervision back.
+Outside away mode, the guard spawns the home-scoped watcher singleton detached (own process group, `nohup`, stdio detached), verifies it within `FM_CLAUDE_GUARD_ARM_CONFIRM` seconds (default 5) against the same strict watcher predicate, and on success resets the failure episode and blocks exactly once with the restored-cycle banner so one handling turn drains what the lapse queued; the following healthy stop is then allowed normally.
+The watcher queues every actionable wake durably before closing, so a cycle restored this way loses nothing even while the auto-arm's rewake channel stays broken, and the singleton lock makes a race with a late-claiming auto-arm harmless.
+Only when that last resort cannot verify a cycle does the guard re-block up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override).
 In Claude mode, positive watcher recovery clears the block budget, failure notice, and attended alarm together under the existing budget lock before either hook reports ordinary recovery.
 
 The block budget is charged by two rules:
@@ -538,7 +541,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 - Installation refuses before writing unless `python3` with `tomllib` and `jq` are available.
 - If `jq` is removed after installation, the hook remains silent and exits 0, turn-end wakes stop, and Kimi crews fall back to idle detection.
 - Unreadable hook input remains fail-open.
-- No harness adapter uses a shell ampersand to manufacture supervision.
+- No harness adapter manufactures supervision with an unverified fire-and-forget shell ampersand; the Claude guard's last-resort arm spawns the watcher detached and claims recovery only after verifying the live cycle.
 
 ## Regression coverage
 
@@ -556,6 +559,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 - Post-alarm continuation suppression.
 - Positive recovery reset.
 - Generation and legacy claim cases that must block or clear instead of allowing a blind stop.
+- The guard-owned last-resort arm: a lapsed cycle restored at the next turn end, the unverifiable-arm fallback to the bounded re-block, and away-mode stand-down.
 - Away-mode daemon ownership between watcher cycles and over a watcher lock left behind by an exited watcher, plus its dead, pid-reused, absent, stale-beacon, and away-mode-off negatives.
 - The away-mode beacon's poll-derived grace widening for a live daemon still mid-cycle and its bound against a dead daemon, a beacon older than that wider grace, and FM_POLL's inapplicability with away mode off.
 - Pi logical-run latching.
@@ -565,6 +569,8 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 - Typed field precedence.
 - Malformed input.
 - Exactly-one-path safety.
+
+`tests/fm-watcher-lock.test.sh` and `tests/fm-claude-stop-autoarm.test.sh` pin the identity-hardened micro-mutex steal that keeps a pid-reuse-wedged hold from silently freezing the auto-arm's claim ledger, in both directions (mismatched recorded identity is reclaimed without signalling the reused pid; a live matching-identity holder still defers).
 
 `tests/fm-turnend-foreign-owner-arm-fix.test.sh` runs the extracted isolated executable reproduction against real auto-arm and turn-end guard scripts.
 It proves that a live foreign owner still prevents arming while repeated non-owner Stops receive a diagnostic and exit safely.
@@ -599,4 +605,4 @@ The opt-in live tests are:
 - `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` is the opt-in isolated Pi path.
 - `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` is the opt-in isolated omp path.
 
-[`verification/supervision.md`](verification/supervision.md#turn-end-guard) records the active cross-harness empirical evidence, including the current Claude `asyncRewake` revalidation.
+[`verification/supervision.md`](verification/supervision.md#turn-end-guard) records the active cross-harness empirical evidence, including the current Claude `asyncRewake` revalidation and the 2026-08-30 Stop-hook execution-semantics facts the last-resort arm relies on.
