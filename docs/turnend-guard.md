@@ -392,10 +392,12 @@ Claude drops that exit 2 when it terminated the hook at the configured timeout i
 
 The first fresh exhausted-failure epoch preserves its handoff without consuming a blocked-stop count.
 Later fresh failed epochs advance the same monotonic progression instead of resetting it.
-When none of those proofs appears, the guard restores the standing cycle itself before spending any re-block: Claude runs the whole Stop batch in parallel and a guard exit 2 never suppresses the `asyncRewake` sibling ([`verification/supervision.md`](verification/supervision.md#turn-end-guard) records the dated semantics), so an unclaimed epoch at this point means the auto-arm fired and is wedged, gated, or dead, and re-blocking alone can never bring supervision back.
-Outside away mode, the guard spawns the home-scoped watcher singleton detached (own process group, `nohup`, stdio detached), verifies it within `FM_CLAUDE_GUARD_ARM_CONFIRM` seconds (default 5) against the same strict watcher predicate, and on success resets the failure episode and blocks exactly once with the restored-cycle banner so one handling turn drains what the lapse queued; the following healthy stop is then allowed normally.
+When none of those proofs appears, the guard restores the standing cycle itself rather than merely re-blocking: Claude runs the whole Stop batch in parallel and a guard exit 2 never suppresses the `asyncRewake` sibling ([`verification/supervision.md`](verification/supervision.md#turn-end-guard) records the dated semantics), so an unclaimed epoch at this point means the auto-arm fired and is wedged, gated, or dead, and re-blocking alone can never bring supervision back.
+Outside away mode, the guard spawns the home-scoped watcher singleton detached (own process group, `nohup`, stdio detached), verifies it within `FM_CLAUDE_GUARD_ARM_CONFIRM` seconds (default 5) against the same strict watcher predicate, and on success blocks exactly once with the restored-cycle banner so one handling turn drains what the lapse queued; the following healthy stop is then allowed normally and is what resets the failure episode.
 The watcher queues every actionable wake durably before closing, so a cycle restored this way loses nothing even while the auto-arm's rewake channel stays broken, and the singleton lock makes a race with a late-claiming auto-arm harmless.
-Only when that last resort cannot verify a cycle does the guard re-block up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override).
+That restored-cycle block spends one `FM_CLAUDE_TURNEND_BLOCK_BUDGET` slot exactly like a repair re-block, accounted before the arm runs and charged against a frozen epoch by the same rule; it deliberately does not reset the failure episode, because that reset deletes the block-budget file and the failure notice together, which would erase the progression bounding it and leave the terminal fail-open permanently unverifiable.
+The watcher queues and exits on an actionable wake, so against a persistently wedged auto-arm the guard would otherwise re-arm and re-block at every turn end without bound, past Claude's 8-block override and with no attended alarm ever fired; once the budget is spent the last resort stands down instead of arming again.
+When that last resort cannot verify a cycle, or has no budget slot left to spend, the guard re-blocks with the repair banner instead, within the same `FM_CLAUDE_TURNEND_BLOCK_BUDGET` (default 3, below Claude's 8-block override) that bounds every Claude-mode block in a session.
 In Claude mode, positive watcher recovery clears the block budget, failure notice, and attended alarm together under the existing budget lock before either hook reports ordinary recovery.
 
 The block budget is charged by two rules:
@@ -559,7 +561,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 - Post-alarm continuation suppression.
 - Positive recovery reset.
 - Generation and legacy claim cases that must block or clear instead of allowing a blind stop.
-- The guard-owned last-resort arm: a lapsed cycle restored at the next turn end, the unverifiable-arm fallback to the bounded re-block, and away-mode stand-down.
+- The guard-owned last-resort arm: a lapsed cycle restored at the next turn end, the unverifiable-arm fallback to the bounded re-block, repeated arms spending the same block budget, the spent-budget stand-down to the attended fail-open, and away-mode stand-down.
 - Away-mode daemon ownership between watcher cycles and over a watcher lock left behind by an exited watcher, plus its dead, pid-reused, absent, stale-beacon, and away-mode-off negatives.
 - The away-mode beacon's poll-derived grace widening for a live daemon still mid-cycle and its bound against a dead daemon, a beacon older than that wider grace, and FM_POLL's inapplicability with away mode off.
 - Pi logical-run latching.
