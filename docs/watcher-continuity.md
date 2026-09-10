@@ -506,7 +506,7 @@ It also covers generation-claim single-flight, stuck-claim supersession, superse
 
 1. Starts with the reproduced stale-lock state plus a pid-reuse-wedged claim mutex.
 2. Receives session start through the tracked SessionStart hook.
-3. Completes two tokenless cycles through the identity-hardened steal.
+3. Completes two tokenless cycles through the start-time-hardened steal.
 4. Checks the competing-live-owner negative control.
 
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including:

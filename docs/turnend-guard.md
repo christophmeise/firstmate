@@ -570,7 +570,8 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 - Malformed input.
 - Exactly-one-path safety.
 
-`tests/fm-watcher-lock.test.sh` and `tests/fm-claude-stop-autoarm.test.sh` pin the identity-hardened micro-mutex steal that keeps a pid-reuse-wedged hold from silently freezing the auto-arm's claim ledger, in both directions (mismatched recorded identity is reclaimed without signalling the reused pid; a live matching-identity holder still defers).
+`tests/fm-watcher-lock.test.sh` and `tests/fm-claude-stop-autoarm.test.sh` pin the start-time-hardened micro-mutex steal that keeps a pid-reuse-wedged hold from silently freezing the auto-arm's claim ledger, in both directions (a recorded start time the live pid no longer matches is reclaimed without signalling the reused pid; a live holder whose start time still matches defers).
+The same suite pins why holder liveness compares the start time rather than the fuller process identity: a holder that exec's into another program keeps its pid and start time while replacing its command, and an identity comparison would read that live holder as dead and hand its lock to a contender.
 
 `tests/fm-turnend-foreign-owner-arm-fix.test.sh` runs the extracted isolated executable reproduction against real auto-arm and turn-end guard scripts.
 It proves that a live foreign owner still prevents arming while repeated non-owner Stops receive a diagnostic and exit safely.
