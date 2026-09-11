@@ -561,7 +561,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 - Post-alarm continuation suppression.
 - Positive recovery reset.
 - Generation and legacy claim cases that must block or clear instead of allowing a blind stop.
-- The guard-owned last-resort arm: a lapsed cycle restored at the next turn end, the unverifiable-arm fallback to the bounded re-block, repeated arms spending the same block budget, the spent-budget stand-down to the attended fail-open, and away-mode stand-down.
+- The guard-owned last-resort arm: a lapsed cycle restored at the next turn end, a default confirm window derived from `bin/fm-watch-arm.sh`'s own arm window (wider on Git Bash/MSYS), the unverifiable-arm fallback to the bounded re-block, repeated arms spending the same block budget, the spent-budget stand-down to the attended fail-open, and away-mode stand-down.
 - Away-mode daemon ownership between watcher cycles and over a watcher lock left behind by an exited watcher, plus its dead, pid-reused, absent, stale-beacon, and away-mode-off negatives.
 - The away-mode beacon's poll-derived grace widening for a live daemon still mid-cycle and its bound against a dead daemon, a beacon older than that wider grace, and FM_POLL's inapplicability with away mode off.
 - Pi logical-run latching.
@@ -574,6 +574,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 
 `tests/fm-watcher-lock.test.sh` and `tests/fm-claude-stop-autoarm.test.sh` pin the start-time-hardened micro-mutex steal that keeps a pid-reuse-wedged hold from silently freezing the auto-arm's claim ledger, in both directions (a recorded start time the live pid no longer matches is reclaimed without signalling the reused pid; a live holder whose start time still matches defers).
 The same suite pins why holder liveness compares the start time rather than the fuller process identity: a holder that exec's into another program keeps its pid and start time while replacing its command, and an identity comparison would read that live holder as dead and hand its lock to a contender.
+It also covers the `TZ` pin on `fm_pid_start_identity`'s `ps -o lstart` fallback: a live holder keeps its lock against a contender running under a different timezone, and the fixture first asserts that the unpinned rendering diverges between the two zones so the case cannot pass vacuously.
 
 `tests/fm-turnend-foreign-owner-arm-fix.test.sh` runs the extracted isolated executable reproduction against real auto-arm and turn-end guard scripts.
 It proves that a live foreign owner still prevents arming while repeated non-owner Stops receive a diagnostic and exit safely.
