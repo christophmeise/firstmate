@@ -144,6 +144,31 @@ fm_pid_start_identity() {  # <pid>
   printf 'lstart=%s\n' "$(printf '%s' "$starttime" | sed 's/^[[:space:]]*//')"
 }
 
+# The epoch second a live process started at, within a second, derived from
+# ps's elapsed time rather than any rendered clock. Unlike the lstart rendering
+# inside fm_pid_identity and fm_pid_start_identity, this depends on no locale
+# and no time zone, so it can bound a process's start against a file's mtime
+# taken on the same machine. Empty and nonzero when the process is gone or the
+# elapsed time cannot be read.
+fm_pid_start_epoch() {  # <pid>
+  local pid=$1 etime days=0 hours=0 minutes seconds now
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  etime=$(LC_ALL=C ps -p "$pid" -o etime= 2>/dev/null | tr -d '[:space:]') || return 1
+  [ -n "$etime" ] || return 1
+  case "$etime" in *-*) days=${etime%%-*}; etime=${etime#*-} ;; esac
+  case "$etime" in
+    *:*:*) hours=${etime%%:*}; etime=${etime#*:} ;;
+  esac
+  minutes=${etime%%:*}
+  seconds=${etime#*:}
+  case "$days$hours$minutes$seconds" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$minutes" != "$etime" ] || return 1
+  now=$(date +%s) || return 1
+  printf '%s\n' $(( now - 10#$days * 86400 - 10#$hours * 3600 - 10#$minutes * 60 - 10#$seconds ))
+}
+
 fm_path_mtime() {
   if [ "$_FM_UNAME" = Darwin ]; then
     /usr/bin/stat -f %m "$1" 2>/dev/null
