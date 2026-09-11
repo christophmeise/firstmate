@@ -116,7 +116,10 @@ fm_pid_identity() {
 # process that exec'd away from the role it registered for; reusing that string
 # for holder liveness would read a live exec'd holder as dead and let its lock
 # be stolen out from under it. Mirrors fm_pid_identity's source selection so
-# both read the same process facts on every platform.
+# both read the same process facts on every platform. The ps fallback's lstart
+# rendering is pinned to one locale AND one time zone: the identity is written
+# under one environment and re-read under another, and a zone-shifted rendering
+# of the same start instant would read a live process as a stranger.
 fm_pid_start_identity() {  # <pid>
   local pid=$1 proc_root stat_line starttime
   local -a stat_fields
