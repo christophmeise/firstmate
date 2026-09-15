@@ -52,6 +52,14 @@
 #              the prior durable record in place and reports the concrete
 #              state; it never leaves a half-transitioned task claiming to be
 #              running.
+#              On tmux, a recorded endpoint that reads `missing` (the shared
+#              server died, or the exact window was killed) is treated by the
+#              stop step as already stopped - there is no agent to stop - and
+#              the launch owner recreates the endpoint in the recorded
+#              worktree under its own preconditions (fm-spawn.sh's header).
+#              herdr and every other backend keep refusing on `missing`, and
+#              `interrupt` and `exit` refuse on it everywhere: there is no
+#              agent to act on.
 #
 # Teardown and discard are NOT verbs here and never will be. `exit` stops an
 # agent and preserves everything else; removing a worktree, killing an
@@ -446,10 +454,14 @@ retire_busy_incarnation() {
   fi
 }
 
-# do_exit: stop the running agent, preserving endpoint and worktree. Prints
-# `already-stopped` or `stopped`.
-do_exit() {
-  local state cmd verdict composer_state cancel interrupt_result=not-needed
+# do_exit [relaunch]: stop the running agent, preserving endpoint and
+# worktree. Prints `already-stopped` or `stopped`. When called as the stop
+# step of a tmux relaunch, an authoritatively `missing` endpoint prints
+# `endpoint-missing` instead of refusing: there is nothing to stop, and the
+# launch owner (fm-spawn --relaunch) recreates the endpoint. The bare verb
+# and every other backend keep refusing on `missing`.
+do_exit() {  # [relaunch]
+  local state cmd verdict composer_state cancel interrupt_result=not-needed caller=${1:-}
   require_state_verified_backend exit
   state=$(agent_state)
   case "$state" in
@@ -458,7 +470,13 @@ do_exit() {
       return 0
       ;;
     alive) ;;
-    missing) die "task $ID's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action" ;;
+    missing)
+      if [ "$caller" = relaunch ] && [ "$BACKEND" = tmux ]; then
+        printf 'endpoint-missing'
+        return 0
+      fi
+      die "task $ID's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action"
+      ;;
     *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint" ;;
   esac
   # A busy agent is interrupted first before the exit command is submitted.
@@ -594,6 +612,10 @@ relaunch_rollback() {
         dead)
           journal_write "failed:$RELAUNCH_PHASE" "rollback=prior-record-kept-agent-dead" || true
           echo "error: $ID's agent stopped but relaunch did not reach replacement launch; no agent is running, and its work plus progress note are preserved at $WT" >&2
+          ;;
+        missing)
+          journal_write "failed:$RELAUNCH_PHASE" "rollback=prior-record-kept-endpoint-missing" || true
+          echo "error: relaunch of $ID stopped short of recreating its missing endpoint; no agent is running, and its work plus progress note are preserved at $WT" >&2
           ;;
         *)
           journal_write "failed:$RELAUNCH_PHASE" "rollback=none-agent-state-$state" || true
@@ -838,7 +860,7 @@ do_relaunch() {
   journal_write noted "${CHECKPOINT_LINES[@]}" "$note_line"
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
-  exit_result=$(do_exit)
+  exit_result=$(do_exit relaunch)
   journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
 
   # The launch owner (fm-spawn --relaunch) clears the previous incarnation's
