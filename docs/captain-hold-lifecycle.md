@@ -615,7 +615,8 @@ The board's half is pinned in `tests/fm-bearings-board.test.sh`:
   A genuinely open one is kept even when an unrelated landed id contains its key after a newline.
 - A build requires a fresh authoritative listed-open result before binding or arming.
 - A reopen retires the pre-reopen source generation and waits for a fresh live listener.
-- A rebuild of an already-armed board with no live listener starts one.
+- A rebuild reports `already-armed` only over a listener verified live.
+- A rebuild over a registered board whose listener died - including a claim whose recorded state-root identity has drifted - reports it as `not-listening` and starts a replacement instead of calling it armed.
 
 That suite drives its Lavish session through a protocol-shaped stub.
 `tests/fm-bearings-board-lavish-live-e2e.test.sh` is the default-on capability guard for the installed provider, and [`verification/process-event-sources.md`](verification/process-event-sources.md) owns the version-scoped evidence.
