@@ -55,9 +55,10 @@
 # Squash merges collapse the branch's commits, so per-commit patch ids against main
 # no longer match, and a pipeline rebase can leave the local worktree diverged from
 # the PR head. Teardown accepts a merged PR whose head contains the current local
-# work (ancestor or equivalent patch ids), or a content match against the default
-# branch. The content check compares only the paths the not-on-a-remote commits
-# themselves changed, so a branch far behind the default branch still reads as landed
+# work (ancestor, equivalent patch ids, or the same commit replayed with only its
+# surrounding lines moved - see rebase_key_for_commit), or a content match against
+# the default branch. The content check compares only the paths the not-on-a-remote
+# commits themselves changed, so a branch far behind the default branch still reads as landed
 # when the default branch matches it at every one of those paths; content_in_default
 # owns that rule and why it is not a loosening. Path membership alone never proves
 # landing - a touched path whose content differs still refuses - which is what keeps
@@ -1547,6 +1548,32 @@ patch_id_for_commit() {
     | awk 'NR == 1 { print $1 }'
 }
 
+# A key that survives a rebase which only moved a commit's surrounding lines.
+# A pipeline rebase onto a default branch that edited lines next to the commit's
+# own changes gives that commit new diff context, so its ordinary patch id no
+# longer matches its replayed copy in the PR head even though the replay changed
+# exactly the same lines. This key pairs the zero-context patch id (the changed
+# lines and their files only) with the commit's author, author date, and full
+# message, which a rebase preserves and an unrelated commit does not share.
+# A replay that had to rewrite any changed line still produces a different key,
+# so this proves only "the same commit, moved", never "a similar edit somewhere
+# on the same path". Prints nothing when either half cannot be computed.
+rebase_key_for_commit() {
+  local commit=$1 zero_context identity
+  zero_context=$(
+    git -C "$WT" show -U0 --pretty=medium --no-ext-diff "$commit" 2>/dev/null \
+      | git patch-id --stable 2>/dev/null \
+      | awk 'NR == 1 { print $1 }'
+  )
+  [ -n "$zero_context" ] || return 0
+  identity=$(
+    git -C "$WT" log -1 --date=raw --format='%an%x00%ae%x00%ad%x00%B' "$commit" 2>/dev/null \
+      | git hash-object --stdin 2>/dev/null
+  )
+  [ -n "$identity" ] || return 0
+  printf '%s %s\n' "$zero_context" "$identity"
+}
+
 # Which of this worktree's at-risk commits the merged PR head does not account
 # for, recorded so a refusal can say how the local work relates to what merged
 # rather than leaving the operator to compare the two histories by hand. Empty
@@ -1561,7 +1588,7 @@ TEARDOWN_MERGED_PR_REF=
 TEARDOWN_PR_CHECK_NOTE=
 
 unpushed_patches_are_in_pr_head() {
-  local pr_head=$1 current base pr_patch_ids commit patch_id unpushed
+  local pr_head=$1 current base pr_commits pr_patch_ids pr_rebase_keys commit patch_id rebase_key unpushed
   TEARDOWN_PR_UNMATCHED_COMMITS=()
   TEARDOWN_PR_CHECK_NOTE=
   if ! current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null); then
@@ -1572,9 +1599,14 @@ unpushed_patches_are_in_pr_head() {
     TEARDOWN_PR_CHECK_NOTE="it shares no common ancestor with this work, so nothing was compared against it"
     return 1
   fi
+  if ! pr_commits=$(git -C "$WT" log --format=%H "$base..$pr_head" -- 2>/dev/null); then
+    TEARDOWN_PR_CHECK_NOTE="its commits could not be listed, so nothing was compared against it"
+    return 1
+  fi
   pr_patch_ids=$(
-    git -C "$WT" log --format=%H "$base..$pr_head" -- 2>/dev/null \
+    printf '%s\n' "$pr_commits" \
       | while IFS= read -r commit; do
+          [ -n "$commit" ] || continue
           patch_id_for_commit "$commit"
         done \
       | sed '/^$/d' \
@@ -1584,6 +1616,7 @@ unpushed_patches_are_in_pr_head() {
     TEARDOWN_PR_CHECK_NOTE="no patch ids could be read from it, so nothing was compared against it"
     return 1
   fi
+  pr_rebase_keys=
   if ! unpushed=$(git -C "$WT" log --format=%H HEAD --not --remotes -- 2>/dev/null); then
     TEARDOWN_PR_CHECK_NOTE="the commits that are on no remote could not be listed, so nothing was compared against it"
     return 1
@@ -1601,6 +1634,30 @@ unpushed_patches_are_in_pr_head() {
       return 1
     fi
     printf '%s\n' "$pr_patch_ids" | grep -qxF "$patch_id" && continue
+    # Built only once some commit needs it, so an exact replay pays nothing extra.
+    if [ -z "$pr_rebase_keys" ]; then
+      pr_rebase_keys=$(
+        printf '%s\n' "$pr_commits" \
+          | while IFS= read -r pr_commit; do
+              [ -n "$pr_commit" ] || continue
+              rebase_key_for_commit "$pr_commit"
+            done \
+          | sed '/^$/d' \
+          | sort -u
+      ) || pr_rebase_keys=
+      if [ -z "$pr_rebase_keys" ]; then
+        TEARDOWN_PR_UNMATCHED_COMMITS=()
+        TEARDOWN_PR_CHECK_NOTE="no rebase keys could be read from it, so the comparison did not finish"
+        return 1
+      fi
+    fi
+    rebase_key=$(rebase_key_for_commit "$commit")
+    if [ -z "$rebase_key" ]; then
+      TEARDOWN_PR_UNMATCHED_COMMITS=()
+      TEARDOWN_PR_CHECK_NOTE="no rebase key could be computed for $commit, so the comparison did not finish"
+      return 1
+    fi
+    printf '%s\n' "$pr_rebase_keys" | grep -qxF "$rebase_key" && continue
     TEARDOWN_PR_UNMATCHED_COMMITS+=("$(git -C "$WT" log --oneline -1 "$commit" 2>/dev/null || printf '%s' "$commit")")
   done <<EOF
 $unpushed
