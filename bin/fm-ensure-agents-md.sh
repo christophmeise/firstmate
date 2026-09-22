@@ -4,9 +4,9 @@
 # real regular file whose canonical content is the two-line @AGENTS.md pointer
 # that Claude Code inlines at load time. Creates a minimal AGENTS.md skeleton
 # when neither file exists, promotes a real CLAUDE.md file when it is the only
-# file present (unless it is already the canonical pointer), converts a correct
-# CLAUDE.md -> AGENTS.md symlink into the pointer file, and refuses to clobber
-# distinct real files or wrong symlinks.
+# file present (unless it is already the canonical pointer), leaves a correct
+# CLAUDE.md -> AGENTS.md symlink in place (a project that chose the symlink form
+# keeps it), and refuses to clobber distinct real files or wrong symlinks.
 # Owns the canonical "## Maintaining this file" self-governance wording for
 # project AGENTS.md files, injecting it idempotently into created skeletons,
 # promoted CLAUDE.md files, and existing AGENTS.md files lacking both the exact
@@ -17,7 +17,8 @@
 # permission to remove governance. No prose equivalence is inferred.
 # Owns the canonical CLAUDE.md pointer content (the exact two-line @AGENTS.md
 # form). A real-file pointer cannot follow a write into AGENTS.md, which is why
-# the installer never creates a CLAUDE.md symlink.
+# the installer never creates a CLAUDE.md symlink; it never replaces an existing
+# correct one either, because that would put an unrequested diff in the project.
 # Refuses a case-variant real memory file such as a lowercase agents.md, so the
 # pointer's @AGENTS.md import resolves to a real AGENTS.md on a case-sensitive
 # filesystem (issue #389). The real-file pointer also eliminates the old
@@ -196,11 +197,10 @@ if [ -e "$AGENTS" ]; then
   if [ -L "$CLAUDE" ]; then
     if is_correct_claude_symlink; then
       ensure_maintenance_section
-      install_claude_pointer
       if [ "$MAINT_INJECTED" -eq 1 ]; then
-        echo "updated: added ## Maintaining this file to AGENTS.md and wrote CLAUDE.md @AGENTS.md pointer in $DIR"
+        echo "updated: added ## Maintaining this file to AGENTS.md and kept CLAUDE.md symlink in $DIR"
       else
-        echo "updated: replaced CLAUDE.md symlink with @AGENTS.md pointer in $DIR"
+        echo "unchanged: AGENTS.md with CLAUDE.md symlink to AGENTS.md in $DIR"
       fi
       exit 0
     fi
@@ -237,8 +237,7 @@ fi
 if [ -L "$CLAUDE" ]; then
   if is_correct_claude_symlink; then
     write_skeleton
-    install_claude_pointer
-    echo "created: AGENTS.md and wrote CLAUDE.md @AGENTS.md pointer in $DIR"
+    echo "created: AGENTS.md and kept CLAUDE.md symlink in $DIR"
     exit 0
   fi
   echo "conflict: CLAUDE.md is a symlink in $DIR but AGENTS.md is missing and the link does not point to AGENTS.md" >&2
