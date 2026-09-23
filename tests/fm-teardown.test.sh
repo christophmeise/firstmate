@@ -42,6 +42,8 @@
 #   (q3) no-mistakes + squash-merged, same file, different content   -> REFUSE
 #   (q4) no-mistakes + squash-merged rebased local plus extra commit -> REFUSE
 #   (q5) gh down + squash-merged stale local, content not in default -> REFUSE
+#   (q6) no-mistakes + squash-merged replay with moved context, later same-file merge -> ALLOW
+#   (q7) no-mistakes + squash-merged replay that rewrote the changed line          -> REFUSE
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -317,7 +319,10 @@ setup_squash_rebased_history() {
   git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "add feature"
   printf '%s\n' base main-edit feature-edit > "$tmp/shared.txt"
   git -C "$tmp" add -- shared.txt
-  git -C "$tmp" -c user.email=t@t -c user.name=t \
+  # A separately authored edit, not a replay of the local commit: a distinct
+  # author date keeps the stale case from ever reading as the same commit moved.
+  GIT_AUTHOR_DATE='2001-01-01T00:00:00Z' \
+    git -C "$tmp" -c user.email=t@t -c user.name=t \
     commit -q -m "edit shared from feature"
   pr_head=$(git -C "$tmp" rev-parse HEAD)
   git -C "$tmp" push -q origin "HEAD:refs/pull/7/head"
@@ -344,6 +349,72 @@ setup_squash_rebased_history() {
       fail "setup_squash_rebased_history: unknown local_mode $local_mode"
       ;;
   esac
+  printf '%s\n' "$pr_head"
+}
+
+# Squash-merged history whose pipeline rebase replayed the local commit onto a
+# main that edited a line NEXT TO the commit's own change. The replay changes
+# exactly the same line, but its diff context moved, so its ordinary patch id no
+# longer matches the local commit's; the squash then lands on main and a later
+# main commit revises that same line, so merging the local copy into the default
+# branch conflicts and cannot show it landed either.
+# replay_mode: moved (a clean cherry-pick) | rewritten (same authorship and
+# message, but the replay changed the edited line to something else)
+# Echoes: <pr_head>
+setup_squash_context_moved_history() {
+  local case_dir=$1 replay_mode=$2 tmp local_commit pr_head
+  tmp="$case_dir/_shared_base"
+  git clone -q "$case_dir/origin.git" "$tmp"
+  printf '%s\n' a b c d e f g > "$tmp/shared.txt"
+  git -C "$tmp" add -- shared.txt
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "shared base"
+  git -C "$tmp" push -q origin main
+  git -C "$case_dir/wt" fetch -q origin
+  git -C "$case_dir/wt" reset -q --hard origin/main
+  rm -rf "$tmp"
+
+  printf '%s\n' a b c D e f g > "$case_dir/wt/shared.txt"
+  git -C "$case_dir/wt" add -- shared.txt
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t \
+    commit -q -m "edit shared from feature"
+  local_commit=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  tmp="$case_dir/_main_move"
+  git clone -q "$case_dir/origin.git" "$tmp"
+  printf '%s\n' A b c d e f g > "$tmp/shared.txt"
+  git -C "$tmp" add -- shared.txt
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "main edits next to it"
+  git -C "$tmp" push -q origin main
+  rm -rf "$tmp"
+
+  tmp="$case_dir/_pipeline"
+  git clone -q "$case_dir/origin.git" "$tmp"
+  git -C "$tmp" fetch -q "$case_dir/wt" "$local_commit"
+  git -C "$tmp" checkout -q -b fm/task-x1
+  git -C "$tmp" -c user.email=t@t -c user.name=t cherry-pick -n "$local_commit" >/dev/null
+  case "$replay_mode" in
+    moved) ;;
+    rewritten)
+      printf '%s\n' A b c other e f g > "$tmp/shared.txt"
+      git -C "$tmp" add -- shared.txt
+      ;;
+    *) fail "setup_squash_context_moved_history: unknown replay_mode $replay_mode" ;;
+  esac
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -C "$local_commit"
+  pr_head=$(git -C "$tmp" rev-parse HEAD)
+  git -C "$tmp" push -q origin "HEAD:refs/pull/7/head"
+  git -C "$tmp" checkout -q main
+  git -C "$tmp" merge -q --squash fm/task-x1 >/dev/null
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "feat: squash (#7)"
+  sed -E 's/^(D|other)$/D-revised-later/' "$tmp/shared.txt" > "$tmp/shared.next" \
+    && mv "$tmp/shared.next" "$tmp/shared.txt"
+  git -C "$tmp" add -- shared.txt
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "later merge revises the landed line"
+  git -C "$tmp" push -q origin main
+  rm -rf "$tmp"
+
+  git -C "$case_dir/project" fetch -q origin
+  git -C "$case_dir/wt" fetch -q origin "refs/pull/7/head:refs/fm-test/pr-head"
   printf '%s\n' "$pr_head"
 }
 
@@ -1011,6 +1082,61 @@ test_squash_merged_rebased_local_with_unlanded_commit_refuses() {
   grep -q REFUSED "$case_dir/stderr" || fail "squash-rebased-unlanded: no REFUSED line in stderr"
   assert_refusal_retained_task_state "$case_dir" squash-rebased-unlanded "$local_head"
   pass "squash-merged rebased local still refuses a genuinely unlanded follow-up commit"
+}
+
+# The shape that stranded a landed lane: the merged PR head holds the local
+# commit replayed with moved context, and a later merge already revised the
+# landed line on main, so neither the ordinary patch id nor the default-branch
+# content can account for the local commit.
+test_squash_merged_context_moved_replay_allows() {
+  local case_dir rc pr_head local_head
+  case_dir=$(make_case squash-context-moved)
+  write_meta "$case_dir" no-mistakes ship
+  pr_head=$(setup_squash_context_moved_history "$case_dir" moved)
+  local_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  printf '%s\n' \
+    'pr=https://github.com/example/repo/pull/7' \
+    "pr_head=$pr_head" >> "$case_dir/state/task-x1.meta"
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+  [ "$(git -C "$case_dir/wt" show "$local_head" | git patch-id --stable | awk '{print $1}')" \
+    != "$(git -C "$case_dir/wt" show "$pr_head" | git patch-id --stable | awk '{print $1}')" ] \
+    || fail "squash-context-moved: fixture replay kept its patch id, so the case is vacuous"
+  git -C "$case_dir/wt" fetch -q origin main
+  ! git -C "$case_dir/wt" merge-tree --write-tree origin/main "$local_head" >/dev/null 2>&1 \
+    || fail "squash-context-moved: fixture main still merges cleanly with the local copy, so the case is vacuous"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "squash-context-moved: teardown should succeed when the merged PR head replayed the same commit with moved context"$'\n'"$(cat "$case_dir/stderr")"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "squash-context-moved: teardown printed a REFUSED line"
+  pass "squash-merged replay with moved context is landed even after a later merge revises the same line"
+}
+
+# Same authorship and message as the local commit, but the replay changed the
+# edited line itself, so the PR head does not hold the local change.
+test_squash_merged_rewritten_replay_refuses() {
+  local case_dir rc pr_head local_head
+  case_dir=$(make_case squash-rewritten-replay)
+  write_meta "$case_dir" no-mistakes ship
+  pr_head=$(setup_squash_context_moved_history "$case_dir" rewritten)
+  local_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  printf '%s\n' \
+    'pr=https://github.com/example/repo/pull/7' \
+    "pr_head=$pr_head" >> "$case_dir/state/task-x1.meta"
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "squash-rewritten-replay: teardown should refuse when the replay rewrote the changed line"$'\n'"$(cat "$case_dir/stderr")"
+  grep -q REFUSED "$case_dir/stderr" || fail "squash-rewritten-replay: no REFUSED line in stderr"
+  assert_refusal_retained_task_state "$case_dir" squash-rewritten-replay "$local_head"
+  pass "squash-merged replay that rewrote the changed line still refuses"
 }
 
 test_squash_merged_stale_local_refuses_when_forge_unreachable() {
@@ -3696,6 +3822,8 @@ test_merged_pr_with_later_local_commit_refuses
 test_squash_merged_rebased_branch_allows
 test_squash_merged_same_file_different_content_refuses
 test_squash_merged_rebased_local_with_unlanded_commit_refuses
+test_squash_merged_context_moved_replay_allows
+test_squash_merged_rewritten_replay_refuses
 test_squash_merged_stale_local_refuses_when_forge_unreachable
 test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags

@@ -48,8 +48,10 @@
 # the PR head. A diverged copy is not treated as landed: path-set coverage, git
 # cherry, and merge-tree containment each fail to prove content landed without also
 # accepting unlanded edits to the same paths. Teardown still accepts a merged PR
-# whose head contains the current local work (ancestor or equivalent patch ids),
-# or a clean content-in-default tree match. Anything else refuses.
+# whose head contains the current local work (ancestor, equivalent patch ids, or
+# the same commit replayed with only its surrounding lines moved - see
+# rebase_key_for_commit), or a clean content-in-default tree match.
+# Anything else refuses.
 # The PR itself is resolved from the task's recorded pr= when present, or - when
 # no pr= was ever recorded (e.g. a yolo-authorized merge on a repo with no PR CI,
 # where the usual "checks green" fm-pr-check.sh trigger never fires) - by looking
@@ -1297,26 +1299,71 @@ patch_id_for_commit() {
     | awk 'NR == 1 { print $1 }'
 }
 
+# A key that survives a rebase which only moved a commit's surrounding lines.
+# A pipeline rebase onto a default branch that edited lines next to the commit's
+# own changes gives that commit new diff context, so its ordinary patch id no
+# longer matches its replayed copy in the PR head even though the replay changed
+# exactly the same lines. This key pairs the zero-context patch id (the changed
+# lines and their files only) with the commit's author, author date, and full
+# message, which a rebase preserves and an unrelated commit does not share.
+# A replay that had to rewrite any changed line still produces a different key,
+# so this proves only "the same commit, moved", never "a similar edit somewhere
+# on the same path". Prints nothing when either half cannot be computed.
+rebase_key_for_commit() {
+  local commit=$1 zero_context identity
+  zero_context=$(
+    git -C "$WT" show -U0 --pretty=medium --no-ext-diff "$commit" 2>/dev/null \
+      | git patch-id --stable 2>/dev/null \
+      | awk 'NR == 1 { print $1 }'
+  )
+  [ -n "$zero_context" ] || return 0
+  identity=$(
+    git -C "$WT" log -1 --date=raw --format='%an%x00%ae%x00%ad%x00%B' "$commit" 2>/dev/null \
+      | git hash-object --stdin 2>/dev/null
+  )
+  [ -n "$identity" ] || return 0
+  printf '%s %s\n' "$zero_context" "$identity"
+}
+
 unpushed_patches_are_in_pr_head() {
-  local pr_head=$1 current base pr_patch_ids commit patch_id unpushed
+  local pr_head=$1 current base pr_commits pr_patch_ids pr_rebase_keys commit patch_id rebase_key unpushed
   current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
   base=$(git -C "$WT" merge-base "$current" "$pr_head" 2>/dev/null) || return 1
+  pr_commits=$(git -C "$WT" log --format=%H "$base..$pr_head" -- 2>/dev/null) || return 1
   pr_patch_ids=$(
-    git -C "$WT" log --format=%H "$base..$pr_head" -- 2>/dev/null \
+    printf '%s\n' "$pr_commits" \
       | while IFS= read -r commit; do
+          [ -n "$commit" ] || continue
           patch_id_for_commit "$commit"
         done \
       | sed '/^$/d' \
       | sort -u
   ) || return 1
   [ -n "$pr_patch_ids" ] || return 1
+  pr_rebase_keys=
   unpushed=$(git -C "$WT" log --format=%H HEAD --not --remotes -- 2>/dev/null) || return 1
   [ -n "$unpushed" ] || return 1
   while IFS= read -r commit; do
     [ -n "$commit" ] || continue
     patch_id=$(patch_id_for_commit "$commit") || return 1
     [ -n "$patch_id" ] || return 1
-    printf '%s\n' "$pr_patch_ids" | grep -qxF "$patch_id" || return 1
+    printf '%s\n' "$pr_patch_ids" | grep -qxF "$patch_id" && continue
+    # Built only once some commit needs it, so an exact replay pays nothing extra.
+    if [ -z "$pr_rebase_keys" ]; then
+      pr_rebase_keys=$(
+        printf '%s\n' "$pr_commits" \
+          | while IFS= read -r pr_commit; do
+              [ -n "$pr_commit" ] || continue
+              rebase_key_for_commit "$pr_commit"
+            done \
+          | sed '/^$/d' \
+          | sort -u
+      ) || return 1
+      [ -n "$pr_rebase_keys" ] || return 1
+    fi
+    rebase_key=$(rebase_key_for_commit "$commit")
+    [ -n "$rebase_key" ] || return 1
+    printf '%s\n' "$pr_rebase_keys" | grep -qxF "$rebase_key" || return 1
   done <<EOF
 $unpushed
 EOF
