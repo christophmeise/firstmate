@@ -19,6 +19,9 @@
 #      attributes it to nothing. It does inherit the worker's environment,
 #      including the GOTMPDIR=<task-tmp>/gotmp marker bin/fm-spawn.sh exports
 #      into every task pane, and that marker survives reparenting.
+#      bin/fm-spawn.sh also exports CHROME_DEVTOOLS_AXI_SESSION=fm-<id> into
+#      ship and scout panes, so each task gets its own bridge rather than the
+#      per-user default one (port 9224, ~/.chrome-devtools-axi/bridge.pid).
 #   2. puppeteer's default launch (remote-debugging port, not pipe) starts
 #      Chrome detached in its own process group. When the node process driving
 #      it dies without closing it - a test runner killed with SIGKILL, a timed
@@ -27,8 +30,11 @@
 #      Chrome (chrome-devtools-mcp's default) exits when its pipe closes, so it
 #      only leaks through path 1.
 #
-# Task mode stops every bridge whose environment carries GOTMPDIR=<dir>/gotmp.
-# Sweep mode stops:
+# Neither mode ever stops a bridge whose CHROME_DEVTOOLS_AXI_SESSION is unset,
+# empty, or "default": that shared default bridge may be serving another task
+# or the captain, so the GOTMPDIR it was started with names no single owner.
+# Task mode stops every other bridge whose environment carries
+# GOTMPDIR=<dir>/gotmp. Sweep mode stops:
 #   - a bridge whose GOTMPDIR names a /tmp/fm-<id>/gotmp task temp root that no
 #     longer exists. Teardown removes that root, so its absence proves the task
 #     is gone in whichever home owned it. A bridge without that marker - the
@@ -68,7 +74,8 @@ With --task-tmp, stop the chrome-devtools-axi bridges (and their browsers) of
 the task whose per-task temp root is <dir>. Without it, stop bridges whose task
 temp root is gone and orphaned automation Chromes older than
 FM_AUTOMATION_BROWSER_MIN_AGE seconds (default 7200). Never touches a browser
-without an automation marker. --dry-run reports and signals nothing. Read this
+without an automation marker, nor a bridge whose CHROME_DEVTOOLS_AXI_SESSION
+is unset, empty, or "default" (the shared default bridge). --dry-run reports and signals nothing. Read this
 script's header for the full rule.
 TXT
 }
@@ -116,19 +123,19 @@ ab_is_automation_chrome() { # <command>
   return 1
 }
 
-# The value of GOTMPDIR in <pid>'s environment, when readable.
-ab_process_gotmpdir() { # <pid>
-  local pid=$1 env token
+# The value of <name> in <pid>'s environment, when readable.
+ab_process_env() { # <pid> <name>
+  local pid=$1 name=$2 env token
   local -a tokens=()
   if [ -r "$PROC_ROOT/$pid/environ" ]; then
-    tr '\0' '\n' < "$PROC_ROOT/$pid/environ" 2>/dev/null | sed -n 's/^GOTMPDIR=//p' | head -n 1
+    tr '\0' '\n' < "$PROC_ROOT/$pid/environ" 2>/dev/null | awk -v p="$name=" 'index($0, p) == 1 { print substr($0, length(p) + 1); exit }'
     return 0
   fi
   env=$(ps -E -ww -o command= -p "$pid" 2>/dev/null) || return 1
   read -r -a tokens <<< "$env"
   [ "${#tokens[@]}" -gt 0 ] || return 0
   for token in "${tokens[@]}"; do
-    case "$token" in GOTMPDIR=*) printf '%s\n' "${token#GOTMPDIR=}"; return 0 ;; esac
+    case "$token" in "$name="*) printf '%s\n' "${token#"$name="}"; return 0 ;; esac
   done
   return 0
 }
@@ -219,7 +226,7 @@ ab_act() { # <pid> <description>
 }
 
 ab_run() {
-  local uid pid ppid etime command age gotmp root i
+  local uid pid ppid etime command age gotmp session root i
   local -a cand_pids=() cand_descs=()
   uid=$(id -u 2>/dev/null || true)
   case "$uid" in ''|*[!0-9]*) ab_die "cannot resolve the current uid" ;; esac
@@ -229,7 +236,9 @@ ab_run() {
     case "$pid$ppid" in ''|*[!0-9]*) continue ;; esac
     [ "$pid" != "$$" ] || continue
     if ab_is_bridge "$command"; then
-      gotmp=$(ab_process_gotmpdir "$pid") || continue
+      gotmp=$(ab_process_env "$pid" GOTMPDIR) || continue
+      session=$(ab_process_env "$pid" CHROME_DEVTOOLS_AXI_SESSION) || continue
+      case "$session" in ''|default) continue ;; esac
       if [ -n "$TASK_TMP" ]; then
         [ "$gotmp" = "$TASK_TMP/gotmp" ] || continue
         cand_descs+=("chrome-devtools-axi bridge of task temp root $TASK_TMP")

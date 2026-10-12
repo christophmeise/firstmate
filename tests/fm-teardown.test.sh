@@ -4543,7 +4543,7 @@ test_task_automation_browser_bridge_is_stopped() {
 require("node:child_process").spawn("sleep", ["300"], { detached: true, stdio: "ignore" });
 setInterval(() => {}, 1000);
 JS
-  ( cd "$case_dir/scratchpad" && GOTMPDIR="$case_dir/tasktmp/gotmp" exec node "$bridge_js" ) </dev/null >/dev/null 2>&1 &
+  ( cd "$case_dir/scratchpad" && GOTMPDIR="$case_dir/tasktmp/gotmp" CHROME_DEVTOOLS_AXI_SESSION=fm-teardown-fixture exec node "$bridge_js" ) </dev/null >/dev/null 2>&1 &
   bridge=$!
   disown
   chrome=

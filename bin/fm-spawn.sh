@@ -277,8 +277,10 @@
 #   that never reaches an isolated worktree refuses at the end of that wait,
 #   naming the last path seen and why it was rejected.
 #   That placement is proven only at launch. Every ship or scout pane therefore
-#   also receives `export FM_TASK_ID=<task-id>` before the launch command, on
-#   the same channel as GOTMPDIR, and bin/fm-test-run.sh refuses to execute the
+#   also receives `export FM_TASK_ID=<task-id>` (and
+#   `export CHROME_DEVTOOLS_AXI_SESSION=fm-<task-id>`, giving the task its own
+#   chrome-devtools-axi bridge) before the launch command, on the same channel
+#   as GOTMPDIR, and bin/fm-test-run.sh refuses to execute the
 #   behavior suite from the repository primary checkout while that marker is
 #   set (its header owns the refusal). A secondmate runs in its own home and is
 #   not marked.
@@ -334,10 +336,11 @@
 #   TMUX TMUX_PANE HERDR_ENV HERDR_SESSION HERDR_SOCKET_PATH HERDR_PANE_ID
 #   CMUX_WORKSPACE_ID CMUX_SURFACE_ID CMUX_TAB_ID CMUX_PANEL_ID CMUX_SOCKET_PATH
 #   ZELLIJ ZELLIJ_SESSION_NAME ZELLIJ_PANE_ID FM_ZELLIJ_SESSION, plus the task
-#   marker FM_TASK_ID that ship and scout panes receive above, plus the
-#   compact-adviser kill switch COMPACT_ADVISER_DISABLE, which the floor also
-#   pins to 1 with a literal assignment so it survives the cleared environment
-#   even on a host that never had it set.
+#   marker FM_TASK_ID and the per-task CHROME_DEVTOOLS_AXI_SESSION=fm-<id> that
+#   ship and scout panes receive above, plus the compact-adviser kill switch
+#   COMPACT_ADVISER_DISABLE, which the floor also pins to 1 with a literal
+#   assignment so it survives the cleared environment even on a host that never
+#   had it set.
 #   An enabled task trace also retains TRACEPARENT. Explicit Firstmate launch
 #   assignments still apply inside the filtered environment, including the
 #   FM_TASK_INBOX export every launch carries (the absolute state/<id>.inbox
@@ -5567,9 +5570,12 @@ fi
 # suite in the repository's primary checkout. Ship and scout workers are the
 # ones assigned an isolated worktree; a secondmate runs its own home instead.
 # The id reached a validated bare-slug charset above, so it carries no shell
-# syntax of its own.
+# syntax of its own. The same panes get their own chrome-devtools-axi session
+# so each task's browser bridge has one owner rather than sharing the per-user
+# default bridge, which bin/fm-automation-browser-reap.sh never stops.
 if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   spawn_send_text_line "$T" "export FM_TASK_ID=$ID"
+  spawn_send_text_line "$T" "export CHROME_DEVTOOLS_AXI_SESSION=fm-$ID"
 fi
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
@@ -5597,7 +5603,7 @@ if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
     TMPDIR TMP TEMP GOTMPDIR TMUX TMUX_PANE HERDR_ENV HERDR_SESSION HERDR_SOCKET_PATH \
     HERDR_PANE_ID CMUX_WORKSPACE_ID CMUX_SURFACE_ID CMUX_TAB_ID CMUX_PANEL_ID \
     CMUX_SOCKET_PATH ZELLIJ ZELLIJ_SESSION_NAME ZELLIJ_PANE_ID FM_ZELLIJ_SESSION \
-    FM_TASK_ID COMPACT_ADVISER_DISABLE LAVISH_AXI_HOST \
+    FM_TASK_ID CHROME_DEVTOOLS_AXI_SESSION COMPACT_ADVISER_DISABLE LAVISH_AXI_HOST \
     $LAUNCH_ENV_NAMES; do
     # Only validated names enter shell syntax. Values expand once, quoted, in
     # the pane shell and never become source text or spawn-process snapshots.

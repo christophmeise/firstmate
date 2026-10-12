@@ -135,14 +135,14 @@ setInterval(() => {}, 1000);
 JS
 }
 
-# Start a bridge stand-in with GOTMPDIR=<marker> (empty: unset); echo its pid.
-start_bridge() { # <marker> [chrome]
+# Start a bridge stand-in with GOTMPDIR=<marker> and
+# CHROME_DEVTOOLS_AXI_SESSION=<session> (empty: unset); echo its pid.
+start_bridge() { # <marker> <session> [chrome]
   local pid
-  if [ -n "$1" ]; then
-    (cd "$TMP_ROOT" && GOTMPDIR=$1 FIXTURE_CHROME=${2:-} exec node "$BRIDGE_JS") </dev/null >/dev/null 2>&1 &
-  else
-    (cd "$TMP_ROOT" && unset GOTMPDIR && FIXTURE_CHROME=${2:-} exec node "$BRIDGE_JS") </dev/null >/dev/null 2>&1 &
-  fi
+  local -a env_args=(-u GOTMPDIR -u CHROME_DEVTOOLS_AXI_SESSION)
+  [ -z "$1" ] || env_args+=("GOTMPDIR=$1")
+  [ -z "$2" ] || env_args+=("CHROME_DEVTOOLS_AXI_SESSION=$2")
+  (cd "$TMP_ROOT" && FIXTURE_CHROME=${3:-} exec env "${env_args[@]}" node "$BRIDGE_JS") </dev/null >/dev/null 2>&1 &
   pid=$!
   track "$pid"
   printf '%s\n' "$pid"
@@ -159,7 +159,7 @@ child_of() { # <pid> -> first child pid, waiting briefly
 }
 
 test_bridges() {
-  local gone live gone_pid live_pid other unmarked out task_tmp task_bridge task_chrome task_sleep bystander
+  local gone live gone_pid live_pid other unmarked gone_unnamed gone_default out task_tmp task_bridge task_chrome task_sleep bystander task_unnamed task_default
   if ! command -v node >/dev/null 2>&1; then
     pass "bridge cases skipped: node is absent on this host"
     return 0
@@ -169,10 +169,12 @@ test_bridges() {
   live="/tmp/fm-fmabtest-$$-live"
   rm -rf "$gone"
   mkdir -p "$live"
-  gone_pid=$(start_bridge "$gone/gotmp")
-  live_pid=$(start_bridge "$live/gotmp")
-  other=$(start_bridge "$TMP_ROOT/not-a-task-root/gotmp")
-  unmarked=$(start_bridge "")
+  gone_pid=$(start_bridge "$gone/gotmp" fm-gone)
+  live_pid=$(start_bridge "$live/gotmp" fm-live)
+  other=$(start_bridge "$TMP_ROOT/not-a-task-root/gotmp" fm-other)
+  unmarked=$(start_bridge "" fm-unmarked)
+  gone_unnamed=$(start_bridge "$gone/gotmp" "")
+  gone_default=$(start_bridge "$gone/gotmp" default)
   sleep 1
 
   out=$("$REAPER" --dry-run) || fail "bridge-sweep: dry-run sweep failed"
@@ -181,14 +183,18 @@ test_bridges() {
   listed "$out" "$live_pid" && fail "bridge-sweep: a bridge of a live task was selected"
   listed "$out" "$other" && fail "bridge-sweep: a bridge without a task temp root marker was selected"
   listed "$out" "$unmarked" && fail "bridge-sweep: a bridge without GOTMPDIR was selected"
-  pass "sweep selects a bridge only when its task's temp root is gone"
+  listed "$out" "$gone_unnamed" && fail "bridge-sweep: a bridge without a session name was selected"
+  listed "$out" "$gone_default" && fail "bridge-sweep: the shared default-session bridge was selected"
+  pass "sweep selects a bridge only when its task's temp root is gone, never the shared default bridge"
 
   task_tmp="$TMP_ROOT/tasktmp"
   mkdir -p "$task_tmp/gotmp"
-  task_bridge=$(start_bridge "$task_tmp/gotmp" "$CHROME")
+  task_bridge=$(start_bridge "$task_tmp/gotmp" fm-tasktmp "$CHROME")
   task_chrome=$(child_of "$task_bridge") || fail "task-mode: fixture bridge did not start its browser"
   task_sleep=$(child_of "$task_chrome") || fail "task-mode: fixture browser did not start"
-  bystander=$(start_bridge "$TMP_ROOT/other-task/gotmp")
+  bystander=$(start_bridge "$TMP_ROOT/other-task/gotmp" fm-other-task)
+  task_unnamed=$(start_bridge "$task_tmp/gotmp" "")
+  task_default=$(start_bridge "$task_tmp/gotmp" default)
   sleep 0.5
 
   out=$("$REAPER" --task-tmp "$task_tmp") || fail "task-mode: reap failed"
@@ -196,9 +202,11 @@ test_bridges() {
   wait_gone "$task_chrome" 5 || fail "task-mode: the browser in its own process group survived its bridge"
   wait_gone "$task_sleep" 5 || fail "task-mode: a browser descendant survived"
   alive "$bystander" || fail "task-mode: another task's bridge was stopped"
+  alive "$task_unnamed" || fail "task-mode: a bridge without a session name was stopped"
+  alive "$task_default" || fail "task-mode: the shared default-session bridge was stopped"
   assert_contains "$out" "stopped chrome-devtools-axi bridge of task temp root $task_tmp $task_bridge" \
     "task-mode: the reap was not reported"
-  pass "task mode stops the task's bridge with its whole browser tree and leaves other bridges alone"
+  pass "task mode stops the task's bridge with its whole browser tree and leaves other and default-session bridges alone"
 }
 
 test_orphan_matcher
