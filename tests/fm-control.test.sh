@@ -790,6 +790,56 @@ test_already_stopped_exit_is_idempotent() {
   pass "fm-control exit: an already-stopped agent is idempotent success with no bytes sent"
 }
 
+test_exit_stops_the_task_automation_browser_bridge() {
+  local dir out rc bridge_js bridge browser other
+  if ! command -v node >/dev/null 2>&1; then
+    pass "fm-control exit automation-browser case skipped: node is absent on this host"
+    return 0
+  fi
+  dir=$(new_case exit-axi-bridge)
+  add_task "$dir" t1 claude
+  printf '%s\n' "tasktmp=$dir/tasktmp" >> "$dir/home/state/t1.meta"
+  mkdir -p "$dir/tasktmp/gotmp" "$dir/scratch"
+  alive_as "$dir" claude
+
+  # A chrome-devtools-axi bridge stand-in started outside the worktree with the
+  # task's GOTMPDIR marker, holding a detached browser stand-in; and a bridge
+  # of another task that must survive.
+  bridge_js="$dir/axi/dist/bin/chrome-devtools-axi-bridge.js"
+  mkdir -p "$(dirname "$bridge_js")"
+  cat > "$bridge_js" <<'JS'
+require("node:child_process").spawn("/bin/sleep", ["300"], { detached: true, stdio: "ignore" });
+setInterval(() => {}, 1000);
+JS
+  ( cd "$dir/scratch" && GOTMPDIR="$dir/tasktmp/gotmp" CHROME_DEVTOOLS_AXI_SESSION=fm-t1 exec node "$bridge_js" ) </dev/null >/dev/null 2>&1 &
+  bridge=$!
+  ( cd "$dir/scratch" && GOTMPDIR="$dir/other/gotmp" CHROME_DEVTOOLS_AXI_SESSION=fm-other exec node "$bridge_js" ) </dev/null >/dev/null 2>&1 &
+  other=$!
+  browser=
+  for _ in $(seq 1 50); do
+    browser=$(pgrep -P "$bridge" 2>/dev/null | head -n 1)
+    [ -n "$browser" ] && break
+    sleep 0.1
+  done
+  [ -n "$browser" ] || { kill -KILL "$bridge" "$other" 2>/dev/null; pkill -KILL -P "$other" 2>/dev/null; fail "exit-axi-bridge: fixture bridge did not start its browser"; }
+
+  out=$(run_control "$dir" t1 exit); rc=$?
+  sleep 0.3
+  local bridge_alive=0 browser_alive=0 other_alive=0
+  kill -0 "$bridge" 2>/dev/null && bridge_alive=1
+  kill -0 "$browser" 2>/dev/null && browser_alive=1
+  kill -0 "$other" 2>/dev/null && other_alive=1
+  pkill -KILL -P "$other" 2>/dev/null; kill -KILL "$bridge" "$browser" "$other" 2>/dev/null
+  expect_code 0 "$rc" "exit with an automation browser bridge should succeed"$'\n'"$out"
+  assert_contains "$out" "stopped t1 harness=claude" "exit should still report the stop"
+  assert_contains "$out" "stopped chrome-devtools-axi bridge of task temp root $dir/tasktmp $bridge" \
+    "exit should report stopping the task's bridge"
+  [ "$bridge_alive" = 0 ] || fail "exit-axi-bridge: the task's bridge survived fm-control exit"
+  [ "$browser_alive" = 0 ] || fail "exit-axi-bridge: the bridge's detached browser survived fm-control exit"
+  [ "$other_alive" = 1 ] || fail "exit-axi-bridge: another task's bridge was stopped"
+  pass "fm-control exit: the stopped task's automation browser bridge and its browser go with it, another task's stay"
+}
+
 test_missing_tmux_endpoint_refuses_rather_than_claiming_a_stop() {
   local dir out rc
   dir=$(new_case gone)
@@ -1199,6 +1249,7 @@ test_verb_allowlist_is_closed
 test_resume_is_refused_with_its_reason
 test_relaunch_only_flags_are_rejected_on_other_verbs
 test_already_stopped_exit_is_idempotent
+test_exit_stops_the_task_automation_browser_bridge
 test_missing_tmux_endpoint_refuses_rather_than_claiming_a_stop
 test_interrupt_refuses_when_no_agent_runs
 test_ambiguous_endpoint_refuses
