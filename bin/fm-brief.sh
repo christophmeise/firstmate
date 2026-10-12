@@ -611,6 +611,7 @@ IFS= read -r -d '' SHARED_INFRA_RULE <<'EOF' || true
    `blocked [at=<epoch>]: {what you need}` and stop; firstmate arranges it.
 EOF
 SHARED_INFRA_RULE=${SHARED_INFRA_RULE%$'\n'}
+# shellcheck disable=SC2016 # Literal brief text: the backticks must stay unexpanded.
 WAIT_OWN_WORK_RULE='8. Wait only on your own work: watch your own process id or your own output artifact, never a
    machine-wide process match such as `pgrep -f` - that matches sibling lanes and your own
    shell, and can outlive the thing you meant to wait for. Before reporting anything as still
