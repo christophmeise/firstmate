@@ -164,9 +164,8 @@ fm_test_pid_identity() {
     '. "$1"; fm_pid_identity "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$pid"
 }
 
-# The start-time-only record fm_lock_holder_alive consults. A claim writes both
-# this and the fuller pid-identity, so a fixture that fabricates a hold has to
-# write both to reproduce the real shape.
+# The start-time-only record fm_lock_holder_alive consults, which every claim
+# writes; a fixture that fabricates a hold writes it to reproduce the real shape.
 fm_test_pid_start_identity() {
   local pid=$1
   FM_STATE_OVERRIDE="${TMPDIR:-/tmp}" bash -c \
