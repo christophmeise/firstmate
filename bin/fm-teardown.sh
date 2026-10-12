@@ -302,6 +302,12 @@
 #     roots are unique per task and never
 #     shared, so this can never reach another task's or the primary's
 #     processes. Idempotent: nothing left to find is a silent no-op.
+#   Fix 2b - stop the task's automation browsers. A chrome-devtools-axi bridge
+#     is a detached daemon that never exits on its own and is often started
+#     from a harness scratchpad outside the worktree, so Fix 2 cannot see it or
+#     the headless Chrome it holds. bin/fm-automation-browser-reap.sh
+#     --task-tmp stops every bridge carrying this task's GOTMPDIR marker, with
+#     its whole process tree, and owns that rule. Best effort.
 #   Fix 3 - sweep abandoned remote job workers. A remote job worker started
 #     from a worktree's own bin/ outlives that worktree's removal without
 #     being reachable by Fix 2, because its working directory is wherever it
@@ -3630,6 +3636,10 @@ if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 elif [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes tasktmp "$TASK_TMP"
+fi
+# Fix 2b (see script header): best effort, a failure never blocks cleanup.
+if [ "$KIND" != secondmate ] && [ -n "$TASK_TMP" ]; then
+  "$SCRIPT_DIR/fm-automation-browser-reap.sh" --task-tmp "$TASK_TMP" >&2 || true
 fi
 if [ "$KIND" = ship ] && teardown_owns_worktree && [ -e "$CONFIG/pipeline-spend" ]; then
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
