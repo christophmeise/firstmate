@@ -5553,6 +5553,8 @@ spawn_record_traceparent() {
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
+# bin/fm-automation-browser-reap.sh also reads it as the task's attribution
+# marker on detached browser bridges, which survives their reparenting.
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 # Export the compact-adviser kill switch into the pane shell through the same
 # pre-launch channel, so later commands in that shell inherit it too. The launch

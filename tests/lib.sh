@@ -52,6 +52,10 @@ export FM_GATE_REFUSE_BYPASS=1
 # leaked harness pin alone stays inert outside a suite.
 export FM_TEST_SEAM=1
 
+# Keep fixture watchers from running the machine-wide automation-browser sweep
+# (bin/fm-watch.sh); a case that verifies the sweep sets an interval itself.
+export FM_AUTOMATION_BROWSER_SWEEP_INTERVAL=off
+
 # Clear the task-worker marker bin/fm-spawn.sh exports into ship and scout
 # panes. This suite builds git-init fixture repositories whose primary checkout
 # it runs a copied bin/fm-test-run.sh in, and that runner refuses the primary

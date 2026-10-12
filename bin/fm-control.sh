@@ -34,7 +34,10 @@
 #              otherwise reports `cancel=not-running` having sent one press.
 #   exit       Stop the agent, preserving its terminal endpoint, worktree, and
 #              every uncommitted change. Interrupts first when the task reads
-#              busy, then submits the harness's exit command. Postcondition:
+#              busy, then submits the harness's exit command. Once the agent is
+#              stopped, its automation browsers are stopped too
+#              (bin/fm-automation-browser-reap.sh --task-tmp); relaunch's exit
+#              step does the same. Postcondition:
 #              the backend's recovery-grade classifier reports the agent gone.
 #              Already-stopped is success (idempotent). An endpoint that reads
 #              `missing` is put through the control plane's per-backend absence
@@ -757,6 +760,17 @@ do_exit() {
   printf 'stopped'
 }
 
+# The stopped agent's automation browsers go with it: a chrome-devtools-axi
+# bridge is a detached daemon that would otherwise hold a headless Chrome
+# indefinitely, and a replacement agent starts its own. Best effort, and its
+# report goes to stderr so it never mixes into the verb's result line.
+reap_agent_browsers() {
+  local task_tmp
+  task_tmp=$(fm_meta_get "$META" tasktmp)
+  [ -n "$task_tmp" ] || return 0
+  "$SCRIPT_DIR/fm-automation-browser-reap.sh" --task-tmp "$task_tmp" >&2 || true
+}
+
 # --- transactional relaunch -------------------------------------------------
 #
 # The transaction's durable record is state/<id>.control-relaunch, with the
@@ -1108,6 +1122,7 @@ do_relaunch() {
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
   exit_result=$(do_exit)
+  reap_agent_browsers
   journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
 
   # The launch owner (fm-spawn --relaunch) clears the previous incarnation's
@@ -1174,6 +1189,7 @@ case "$VERB" in
     ;;
   exit)
     result=$(do_exit)
+    reap_agent_browsers
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;
   relaunch)

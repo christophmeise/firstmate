@@ -5099,6 +5099,52 @@ test_leaked_tasktmp_process_is_reaped() {
   pass "a leaked descendant process rooted under the task's per-task tasktmp is reaped by teardown too"
 }
 
+test_task_automation_browser_bridge_is_stopped() {
+  local case_dir rc bridge_js bridge chrome
+  if ! command -v node >/dev/null 2>&1; then
+    pass "automation-browser teardown case skipped: node is absent on this host"
+    return 0
+  fi
+  case_dir=$(make_case automation-browser-bridge)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' "tasktmp=$case_dir/tasktmp" >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/tasktmp/gotmp" "$case_dir/scratchpad"
+  land_shippable_commit "$case_dir"
+
+  # A chrome-devtools-axi bridge started from a harness scratchpad outside the
+  # worktree, carrying the task's GOTMPDIR marker, holding a browser in its own
+  # process group - the shape cwd-rooted reaping cannot see.
+  bridge_js="$case_dir/axi/dist/bin/chrome-devtools-axi-bridge.js"
+  mkdir -p "$(dirname "$bridge_js")"
+  cat > "$bridge_js" <<'JS'
+require("node:child_process").spawn("sleep", ["300"], { detached: true, stdio: "ignore" });
+setInterval(() => {}, 1000);
+JS
+  ( cd "$case_dir/scratchpad" && GOTMPDIR="$case_dir/tasktmp/gotmp" exec node "$bridge_js" ) </dev/null >/dev/null 2>&1 &
+  bridge=$!
+  disown
+  chrome=
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    chrome=$(pgrep -P "$bridge" 2>/dev/null | head -n 1)
+    [ -n "$chrome" ] && break
+    sleep 0.1
+  done
+  [ -n "$chrome" ] || { kill -KILL "$bridge" 2>/dev/null; fail "automation-browser-bridge: fixture bridge did not start its browser"; }
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "automation-browser-bridge: teardown should still succeed"
+  sleep 0.3
+  if kill -0 "$bridge" 2>/dev/null || kill -0 "$chrome" 2>/dev/null; then
+    kill -KILL "$bridge" "$chrome" 2>/dev/null || true
+    fail "automation-browser-bridge: the task's bridge or its browser survived teardown"
+  fi
+  assert_grep "stopped chrome-devtools-axi bridge of task temp root $case_dir/tasktmp $bridge" "$case_dir/stderr" \
+    "automation-browser-bridge: teardown did not report stopping the bridge"
+  pass "teardown stops the task's automation browser bridge and its browser even when started outside the worktree"
+}
+
 test_lsof_absent_reaps_tmux_process_group() {
   local case_dir rc pid path_without_lsof
   case_dir=$(make_case lsof-absent-process-group-reap)
@@ -5730,6 +5776,7 @@ test_another_branchs_parked_run_is_never_touched
 test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
+test_task_automation_browser_bridge_is_stopped
 test_lsof_absent_reaps_tmux_process_group
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed
