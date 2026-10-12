@@ -288,13 +288,6 @@ HOME_SUMMARY_INTERVAL=${FM_HOME_SUMMARY_INTERVAL:-300}
 case "$HOME_SUMMARY_INTERVAL" in
   ''|*[!0-9]*|0) HOME_SUMMARY_INTERVAL=300 ;;
 esac
-# Seconds between automation-browser sweeps; `off` disables them (the test
-# suite does, so fixture watchers never sweep the host).
-AUTOMATION_BROWSER_SWEEP_INTERVAL=${FM_AUTOMATION_BROWSER_SWEEP_INTERVAL:-900}
-case "$AUTOMATION_BROWSER_SWEEP_INTERVAL" in
-  off) ;;
-  ''|*[!0-9]*|0) AUTOMATION_BROWSER_SWEEP_INTERVAL=900 ;;
-esac
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's
                                       # turn-end hook) coalesce into one wake
@@ -2545,33 +2538,6 @@ home_summary_refresh_detached() {
   HOME_SUMMARY_PID=$!
 }
 
-# Automation-browser backstop: stop chrome-devtools-axi bridges whose task is
-# gone and orphaned automation Chromes (bin/fm-automation-browser-reap.sh owns
-# the rule). Detached like the summary refresh so a slow process scan never
-# delays the beacon; what it stops is appended, timestamped, to
-# state/.automation-browser-reap.log, trimmed to its newest 200 lines past 64 KiB.
-AUTOMATION_BROWSER_SWEEP_PID=
-automation_browser_sweep_detached() {
-  if [ -n "$AUTOMATION_BROWSER_SWEEP_PID" ]; then
-    if kill -0 "$AUTOMATION_BROWSER_SWEEP_PID" 2>/dev/null; then
-      return 0
-    fi
-    wait "$AUTOMATION_BROWSER_SWEEP_PID" 2>/dev/null || true
-    AUTOMATION_BROWSER_SWEEP_PID=
-  fi
-  touch "$STATE/.last-automation-browser-sweep"
-  (
-    "$SCRIPT_DIR/fm-automation-browser-reap.sh" 2>&1 | while IFS= read -r line; do
-      printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$line"
-    done >> "$STATE/.automation-browser-reap.log"
-    if [ "$(wc -c < "$STATE/.automation-browser-reap.log")" -gt 65536 ]; then
-      tail -n 200 "$STATE/.automation-browser-reap.log" > "$STATE/.automation-browser-reap.log.tmp" \
-        && mv "$STATE/.automation-browser-reap.log.tmp" "$STATE/.automation-browser-reap.log"
-    fi
-  ) </dev/null >/dev/null 2>&1 &
-  AUTOMATION_BROWSER_SWEEP_PID=$!
-}
-
 RECONCILE_REQUEST_PID=
 reconcile_requests_pending() {
   local request
@@ -2756,11 +2722,6 @@ while :; do
 
   if [ "$(age_of "$STATE/home-summary.json")" -ge "$HOME_SUMMARY_INTERVAL" ]; then
     home_summary_refresh_detached
-  fi
-
-  if [ "$AUTOMATION_BROWSER_SWEEP_INTERVAL" != off ] \
-    && [ "$(age_of "$STATE/.last-automation-browser-sweep")" -ge "$AUTOMATION_BROWSER_SWEEP_INTERVAL" ]; then
-    automation_browser_sweep_detached
   fi
 
   # Bearings publishes reconcile asks as local one-shot request files and
