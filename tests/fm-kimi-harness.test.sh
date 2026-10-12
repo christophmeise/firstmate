@@ -18,6 +18,7 @@ KIMI_HOOK="$ROOT/bin/fm-kimi-turnend-hook.sh"
 TMP_ROOT=$(fm_test_tmproot fm-kimi-harness)
 KIMI_RUNTIME_TASK_TMP=
 KIMI_RUNTIME_LAUNCH_DIR=
+KIMI_RUNTIME_EXTRA=()
 PYTHON_BIN=$(command -v python3) || fail "test needs python3"
 PYTHON_BIN_DIR=$(dirname "$PYTHON_BIN")
 JQ_BIN=$(command -v jq) || fail "test needs jq"
@@ -38,6 +39,10 @@ ai_trailer_hooks_prefix() {  # <home> <id>
 cleanup_kimi_harness() {
   [ -z "$KIMI_RUNTIME_TASK_TMP" ] || fm_test_remove_tree "$KIMI_RUNTIME_TASK_TMP"
   [ -z "$KIMI_RUNTIME_LAUNCH_DIR" ] || fm_test_remove_tree "$KIMI_RUNTIME_LAUNCH_DIR"
+  local extra
+  for extra in ${KIMI_RUNTIME_EXTRA[@]+"${KIMI_RUNTIME_EXTRA[@]}"}; do
+    fm_test_remove_tree "$extra"
+  done
   fm_test_remove_tree "$TMP_ROOT"
 }
 trap cleanup_kimi_harness EXIT
@@ -376,6 +381,46 @@ kimi_typed_launch_file() {
   src=${src%"'"}
   [ -n "$src" ] || fail "spawn did not type a staged launch source line"
   printf '%s' "$src"
+}
+
+# Set KIMI_AXI_SESSION to the CHROME_DEVTOOLS_AXI_SESSION a successful spawn
+# of <id> exported. Runs in the caller's shell so cleanup registration sticks.
+KIMI_AXI_SESSION=
+kimi_spawned_axi_session() { # <case-name> <id>
+  local name=$1 id=$2 rec out rc
+  rm -rf "/tmp/fm-$id"
+  KIMI_RUNTIME_EXTRA+=("/tmp/fm-$id")
+  rec=$(make_spawn_case "$name" "$id")
+  read_spawn_record "$rec"
+  KIMI_RUNTIME_EXTRA+=("$(kimi_launch_dir "$id" "$HOME_DIR")")
+  out=$(run_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id")
+  rc=$?
+  expect_code 0 "$rc" "kimi spawn of a 64-character id should succeed: $out"
+  KIMI_AXI_SESSION=$(grep -o 'export CHROME_DEVTOOLS_AXI_SESSION=[^[:space:]]*' "$CASE_DIR/tmux-calls.log" | tail -1 \
+    | sed 's/^export CHROME_DEVTOOLS_AXI_SESSION=//')
+}
+
+test_kimi_spawn_bounds_long_axi_session() {
+  local prefix id_a id_b session_a session_b session
+  prefix=$(printf 'long-axi-%s-' "$$")
+  while [ "${#prefix}" -lt 60 ]; do prefix="${prefix}x"; done
+  prefix=${prefix:0:60}
+  id_a="${prefix}aaaa"
+  id_b="${prefix}bbbb"
+  [ "${#id_a}" -eq 64 ] || fail "long-axi fixture id is not 64 characters: $id_a"
+  kimi_spawned_axi_session long-axi-a "$id_a"
+  session_a=$KIMI_AXI_SESSION
+  kimi_spawned_axi_session long-axi-b "$id_b"
+  session_b=$KIMI_AXI_SESSION
+  for session in "$session_a" "$session_b"; do
+    [ -n "$session" ] || fail "kimi spawn exported no chrome-devtools-axi session for a 64-character id"
+    [ "${#session}" -le 64 ] || fail "kimi spawn exported a session longer than 64 characters: $session"
+    case "$session" in *[!A-Za-z0-9._-]*) fail "kimi spawn exported a session outside chrome-devtools-axi's charset: $session" ;; esac
+    case "$session" in fm-*) ;; *) fail "kimi spawn exported a session without the fm- prefix: $session" ;; esac
+  done
+  [ "$session_a" != "$session_b" ] \
+    || fail "two 64-character ids sharing a 60-character prefix got the same session: $session_a"
+  pass "fm-spawn: a 64-character id gets a distinct chrome-devtools-axi session within its 64-character limit"
 }
 
 test_kimi_spawn_refuses_shared_task_temp_root() {
@@ -1134,6 +1179,7 @@ test_kimi_hook_remove_preserves_owned_newline_boundary
 test_kimi_hook_fails_closed_on_missing_malformed_or_partial_config
 test_kimi_hook_install_refuses_without_jq
 test_kimi_launch_then_send_is_verified
+test_kimi_spawn_bounds_long_axi_session
 test_kimi_spawn_refuses_shared_task_temp_root
 test_kimi_hook_is_silent_and_requires_registered_workspace_token
 test_kimi_spawn_refuses_unsafe_global_config_before_pane_creation

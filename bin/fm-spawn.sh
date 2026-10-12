@@ -279,7 +279,8 @@
 #   That placement is proven only at launch. Every ship or scout pane therefore
 #   also receives `export FM_TASK_ID=<task-id>` (and
 #   `export CHROME_DEVTOOLS_AXI_SESSION=fm-<task-id>`, giving the task its own
-#   chrome-devtools-axi bridge) before the launch command, on the same channel
+#   chrome-devtools-axi bridge; an id too long for that tool's 64-character
+#   limit uses fm-<first 50 characters>-<cksum of the id> instead) before the launch command, on the same channel
 #   as GOTMPDIR, and bin/fm-test-run.sh refuses to execute the
 #   behavior suite from the repository primary checkout while that marker is
 #   set (its header owns the refusal). A secondmate runs in its own home and is
@@ -5573,9 +5574,15 @@ fi
 # syntax of its own. The same panes get their own chrome-devtools-axi session
 # so each task's browser bridge has one owner rather than sharing the per-user
 # default bridge, which bin/fm-automation-browser-reap.sh never stops.
+# chrome-devtools-axi accepts at most 64 characters, so an id too long for
+# fm-<id> becomes fm-<first 50 characters>-<cksum of the whole id>.
 if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   spawn_send_text_line "$T" "export FM_TASK_ID=$ID"
-  spawn_send_text_line "$T" "export CHROME_DEVTOOLS_AXI_SESSION=fm-$ID"
+  AXI_SESSION="fm-$ID"
+  if [ "${#AXI_SESSION}" -gt 64 ]; then
+    AXI_SESSION="fm-${ID:0:50}-$(printf '%s' "$ID" | cksum | awk '{print $1}')"
+  fi
+  spawn_send_text_line "$T" "export CHROME_DEVTOOLS_AXI_SESSION=$AXI_SESSION"
 fi
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
