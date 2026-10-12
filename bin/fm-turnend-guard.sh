@@ -79,27 +79,16 @@
 #      without consuming a continuation, so one event epoch yields exactly one recovery turn;
 #      the first fresh exhausted-failure epoch preserves the bounded progression,
 #      while later fresh failed epochs consume it instead of resetting it;
-#   4. when neither materializes the auto-arm is genuinely absent for an event
-#      epoch it provably fired on (Claude runs the Stop batch in parallel and
-#      exit 2 never suppresses the sibling), so the guard restores the standing
-#      cycle itself: it spawns the watcher singleton detached, verifies it
-#      against the same strict predicate within FM_CLAUDE_GUARD_ARM_CONFIRM
-#      seconds (default 10, 30 on Git Bash/MSYS - the same window
-#      bin/fm-watch-arm.sh confirms its own arms in), and on success blocks once with the restored-cycle
-#      banner so one handling turn drains what the lapse queued. That block
-#      spends one FM_CLAUDE_TURNEND_BLOCK_BUDGET slot like any other, so a
-#      wedged auto-arm cannot make the guard re-arm and re-block unbounded;
-#      once the budget is spent the last resort stands down to step 5;
-#   5. when that last resort cannot verify a cycle, or has no budget left to
-#      spend: re-block with the repair banner, bounded to
-#      FM_CLAUDE_TURNEND_BLOCK_BUDGET (default 3) consecutive blocks per
-#      session - safely below Claude Code's hard 8-consecutive-block override -
-#      then allow one loud attended fail-open only for an already verified
-#      failure episode. The budget charges each event epoch once, and it
-#      also charges every re-block against an epoch the auto-arm never
-#      advanced past the previous re-block (budget_account_current_epoch owns
-#      that rule), so an inert hook that leaves the ledger frozen cannot hold
-#      the guard in an unbounded re-block loop below that override.
+#   4. only when neither materializes is the auto-arm genuinely absent: re-block
+#      with the repair banner, bounded to FM_CLAUDE_TURNEND_BLOCK_BUDGET
+#      (default 3) consecutive blocks per session - safely below Claude Code's
+#      hard 8-consecutive-block override - then allow one loud attended
+#      fail-open only for an already verified failure episode. The budget
+#      charges each event epoch once, and it also charges every re-block
+#      against an epoch the auto-arm never advanced past the previous
+#      re-block (budget_account_current_epoch owns that rule), so an inert
+#      hook that leaves the ledger frozen cannot hold the guard in an
+#      unbounded re-block loop below that override.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -542,95 +531,9 @@ if autoarm_owns_recovery; then
   exit 0
 fi
 
-# --- guard-owned last-resort arm ---------------------------------------------
-# Claude runs both Stop hooks of the batch in parallel and a guard exit 2 never
-# suppresses the asyncRewake sibling (verified live, docs/verification/
-# supervision.md "Stop hook execution semantics"), so reaching this point means
-# the auto-arm fired for this very Stop and still claimed nothing: it is wedged,
-# gated, or dead. Re-blocking alone cannot restore supervision - it only forces
-# turns that end against the same absent claim - so the synchronous guard
-# restores the standing cycle itself. It spawns the home-scoped watcher
-# singleton detached (own process group via monitor mode, nohup, stdio
-# detached, the same three-way detachment bin/fm-startup-network.sh documents)
-# so the cycle survives this hook's exit, then verifies honestly against the
-# same strict predicate before claiming recovery. The watcher queues every
-# actionable wake durably (fm_wake_append) before closing, so a close with no
-# listening arm loses nothing: the next drain presents it. The singleton lock
-# makes a race with a late-claiming auto-arm harmless - one of the two attaches
-# or stands down. While away mode is active the daemon owns the watcher, so the
-# guard never spawns over it.
-# The confirm default is DERIVED from the same OSTYPE switch bin/fm-watch-arm.sh
-# uses for its own arm window rather than set to a separate number: the window
-# this guard confirms in must never be tighter than the arm layer it is
-# confirming, or the guard reports a failure the arm had not yet had time to
-# avoid, and that is a false-alarm generator. Git Bash/MSYS pays a much higher
-# fork cost while the watcher completes its pre-lock migration, so its default
-# is wider for the same reason fm-watch-arm's is.
-case "${OSTYPE:-}" in
-  msys*|mingw*|cygwin*) GUARD_ARM_CONFIRM_DEFAULT=30 ;;
-  *) GUARD_ARM_CONFIRM_DEFAULT=10 ;;
-esac
-
-guard_last_resort_arm() {
-  local monitor_was_on=0 confirm deadline
-  [ ! -e "$STATE/.afk" ] || return 1
-  [ -x "$WATCH" ] || return 1
-  confirm=${FM_CLAUDE_GUARD_ARM_CONFIRM:-$GUARD_ARM_CONFIRM_DEFAULT}
-  case "$confirm" in ''|*[!0-9]*|0) confirm=$GUARD_ARM_CONFIRM_DEFAULT ;; esac
-  case $- in *m*) monitor_was_on=1 ;; esac
-  set -m 2>/dev/null || true
-  nohup "$WATCH" >/dev/null 2>&1 </dev/null &
-  [ "$monitor_was_on" -eq 1 ] || set +m 2>/dev/null || true
-  deadline=$(( $(date +%s) + confirm + 1 ))
-  while :; do
-    fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && return 0
-    [ "$(date +%s)" -ge "$deadline" ] && return 1
-    sleep 0.2
-  done
-}
-
-# The restored-cycle block spends one bounded continuation, exactly like the
-# repair re-block below. bin/fm-watch.sh queues and exits on an actionable
-# wake, so against a persistently wedged auto-arm the watcher is gone again by
-# the next turn end and this path would otherwise arm and block once more,
-# every turn, without bound - past Claude Code's hard 8-consecutive-block
-# override, which force-ends the turn with no attended alarm ever fired.
-# Accounting therefore runs before the arm, so a spent budget stands the last
-# resort down and lets the terminal decision below run instead.
-# The episode reset that used to run here is gone with it: it deletes the
-# block-budget file along with the failure notice and alarm, so an arm that
-# both spent a slot and reset would erase the very progression that bounds it,
-# and would keep the terminal fail-open unreachable forever by clearing the
-# notice it verifies. An episode ends when a stop is allowed on health alone,
-# not when a block is issued; the following healthy stop performs that reset
-# through the ordinary recovery path above, exactly as it does after any other
-# Claude-mode block.
-BUDGET_ACCOUNTED=0
-if budget_account_current_epoch block; then
-  BUDGET_ACCOUNTED=1
-fi
-if [ "$BUDGET_ACCOUNTED" -eq 1 ] && [ "$COUNT" -le "$BLOCK_BUDGET" ] \
-  && guard_last_resort_arm; then
-  rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
-  {
-    printf '●%s\n' "$rule"
-    printf '●  SUPERVISION RESTORED BY THE TURN-END GUARD (last resort)\n'
-    printf '●  The Stop-owned auto-arm claimed nothing for this event epoch, so this guard\n'
-    printf '●  started the home watcher itself (pid %s, beacon fresh) and verified it live.\n' "$FM_WATCHER_HEALTHY_PID"
-    printf '●  One handling turn now: run bin/fm-wake-drain.sh, handle anything pending, then\n'
-    printf '●  end the turn - the standing cycle is live and a healthy next stop is allowed.\n'
-    printf '●  Do not run bin/fm-watch-arm.sh yourself.\n'
-    printf '●%s\n' "$rule"
-  } >&2
-  exit 2
-fi
-
-# The auto-arm genuinely failed to establish and the last-resort arm either
-# could not verify a cycle or had no bounded continuation left: finish
-# consuming the re-block budget before considering the verified one-time
-# attended fail-open. Accounting that already succeeded above is not repeated,
-# because an epoch identity is accounted at most once per stop.
-[ "$BUDGET_ACCOUNTED" -eq 1 ] || budget_account_current_epoch block || block_stop
+# The auto-arm genuinely failed to establish: consume the bounded re-block
+# budget before considering the verified one-time attended fail-open.
+budget_account_current_epoch block || block_stop
 terminal_fail_open
 terminal_status=$?
 if [ "$terminal_status" -eq 0 ]; then
