@@ -204,11 +204,10 @@ It enters its poll loop immediately and keeps scanning signals, stale panes, and
 - Grok retains its tracked background-task notification protocol.
 
 No adapter starts a replacement with a fire-and-forget shell `&` from a model command.
-The Claude guard's last-resort arm spawns the watcher detached and claims recovery only after verifying the live cycle against the strict predicate.
 The Claude hook's detached handling successor is launched by the hook itself, which waits for the successor's status line before it exits.
 
 The turn-end guard remains the final backstop rather than the normal continuity mechanism.
-In its `--claude` mode it cooperates with the auto-arm, and that backstop includes restoring the standing cycle itself when the auto-arm claims nothing for an event epoch it provably fired on ([`turnend-guard.md`](turnend-guard.md#harness-integrations)).
+In its `--claude` mode it cooperates with the auto-arm.
 
 ## Recovery episode acknowledgement
 
@@ -515,7 +514,6 @@ It also covers generation-claim single-flight, stuck-claim supersession, superse
 - The integrated bounded fail-open.
 - Post-alarm continuation suppression.
 - Positive recovery reset.
-- The guard-owned last-resort arm restoring a lapsed cycle at the next turn end.
 
 [`turnend-guard.md`](turnend-guard.md#regression-coverage) lists that suite's full generation and legacy claim coverage.
 

@@ -392,12 +392,7 @@ Claude drops that exit 2 when it terminated the hook at the configured timeout i
 
 The first fresh exhausted-failure epoch preserves its handoff without consuming a blocked-stop count.
 Later fresh failed epochs advance the same monotonic progression instead of resetting it.
-When none of those proofs appears, the guard restores the standing cycle itself rather than merely re-blocking: Claude runs the whole Stop batch in parallel and a guard exit 2 never suppresses the `asyncRewake` sibling ([`verification/supervision.md`](verification/supervision.md#turn-end-guard) records the dated semantics), so an unclaimed epoch at this point means the auto-arm fired and is wedged, gated, or dead, and re-blocking alone can never bring supervision back.
-Outside away mode, the guard spawns the home-scoped watcher singleton detached (own process group, `nohup`, stdio detached), verifies it within `FM_CLAUDE_GUARD_ARM_CONFIRM` seconds (default 10, 30 on Git Bash/MSYS, derived from the same OSTYPE switch `bin/fm-watch-arm.sh` uses for its own arm window so the guard never confirms in a tighter window than the arm layer it confirms) against the same strict watcher predicate, and on success blocks exactly once with the restored-cycle banner so one handling turn drains what the lapse queued; the following healthy stop is then allowed normally and is what resets the failure episode.
-The watcher queues every actionable wake durably before closing, so a cycle restored this way loses nothing even while the auto-arm's rewake channel stays broken, and the singleton lock makes a race with a late-claiming auto-arm harmless.
-That restored-cycle block spends one `FM_CLAUDE_TURNEND_BLOCK_BUDGET` slot exactly like a repair re-block, accounted before the arm runs and charged against a frozen epoch by the same rule; it deliberately does not reset the failure episode, because that reset deletes the block-budget file and the failure notice together, which would erase the progression bounding it and leave the terminal fail-open permanently unverifiable.
-The watcher queues and exits on an actionable wake, so against a persistently wedged auto-arm the guard would otherwise re-arm and re-block at every turn end without bound, past Claude's 8-block override and with no attended alarm ever fired; once the budget is spent the last resort stands down instead of arming again.
-When that last resort cannot verify a cycle, or has no budget slot left to spend, the guard re-blocks with the repair banner instead, within the same `FM_CLAUDE_TURNEND_BLOCK_BUDGET` (default 3, below Claude's 8-block override) that bounds every Claude-mode block in a session.
+When none of those proofs appears, the guard re-blocks up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override).
 In Claude mode, positive watcher recovery clears the block budget, failure notice, and attended alarm together under the existing budget lock before either hook reports ordinary recovery.
 
 The block budget is charged by two rules:
@@ -543,7 +538,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 - Installation refuses before writing unless `python3` with `tomllib` and `jq` are available.
 - If `jq` is removed after installation, the hook remains silent and exits 0, turn-end wakes stop, and Kimi crews fall back to idle detection.
 - Unreadable hook input remains fail-open.
-- No harness adapter manufactures supervision with an unverified fire-and-forget shell ampersand; the Claude guard's last-resort arm spawns the watcher detached and claims recovery only after verifying the live cycle.
+- No harness adapter uses a shell ampersand to manufacture supervision.
 
 ## Regression coverage
 
@@ -561,7 +556,6 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 - Post-alarm continuation suppression.
 - Positive recovery reset.
 - Generation and legacy claim cases that must block or clear instead of allowing a blind stop.
-- The guard-owned last-resort arm: a lapsed cycle restored at the next turn end, a default confirm window derived from `bin/fm-watch-arm.sh`'s own arm window (wider on Git Bash/MSYS), the unverifiable-arm fallback to the bounded re-block, repeated arms spending the same block budget, the spent-budget stand-down to the attended fail-open, and away-mode stand-down.
 - Away-mode daemon ownership between watcher cycles and over a watcher lock left behind by an exited watcher, plus its dead, pid-reused, absent, stale-beacon, and away-mode-off negatives.
 - The away-mode beacon's poll-derived grace widening for a live daemon still mid-cycle and its bound against a dead daemon, a beacon older than that wider grace, and FM_POLL's inapplicability with away mode off.
 - Pi logical-run latching.
@@ -609,4 +603,4 @@ The opt-in live tests are:
 - `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` is the opt-in isolated Pi path.
 - `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` is the opt-in isolated omp path.
 
-[`verification/supervision.md`](verification/supervision.md#turn-end-guard) records the active cross-harness empirical evidence, including the current Claude `asyncRewake` revalidation and the 2026-08-30 Stop-hook execution-semantics facts the last-resort arm relies on.
+[`verification/supervision.md`](verification/supervision.md#turn-end-guard) records the active cross-harness empirical evidence, including the current Claude `asyncRewake` revalidation.
