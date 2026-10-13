@@ -2139,6 +2139,8 @@ Ownership is machine-wide per canonical source, because separate homes can share
 
 - Claims live under `$XDG_STATE_HOME/firstmate/procevent-claims` (override with `FM_PROCEVENT_CLAIM_ROOT`).
 - Each claim binds its caller-reported home and runner PID to a process identity, unique claim generation, exact registration-file generation, and resolved state-root identity.
+- Beside the claim, the runner records the poll child it spawned - that child's pid and start identity, bound to the claim generation by its token - as soon as the source command is running, and the record is removed with the claim.
+- The record identifies the child by its pid plus its process start time, not its program image, so a source command that exec's into its long-lived poller keeps being recognized while a different process that later inherits the child's number does not.
 - Registration, acquisition, replacement, retirement, and generation-bound release are serialized at one machine-wide boundary per source.
 - A live identity-matched owner is never displaced, and release removes only the exact generation the caller acquired.
 
@@ -2148,22 +2150,29 @@ Ownership is machine-wide per canonical source, because separate homes can share
 - Once that stop has proved ownership and sent TERM, its own escalation to KILL checks only whether the proved group still has members; it does not re-read the leader's identity or group membership, which can change or become unreadable as TERM ends the leader.
 - This proof belongs only to that stop's own escalation and cannot authorize another caller that encounters an unproved group.
 
+**Prove a generation gone**
+
+A stale claim is reclaimed only once its generation is proved gone, and the process-group probe alone cannot prove that: a process group is a number, and once a runner and its child are gone the kernel may hand the runner's pid to anything, so a live group with that number can belong to a stranger.
+The generation is gone when its recorded poll child is not running and either the group is empty or the runner's pid has provably been reused: the live process wearing it has a different identity and started after the claim was written, on a kernel that reserves a group's number while the group has members - Linux and Darwin both do - which proves the group was empty before the number came back.
+A reuse that cannot be proved that way - a live pid that predates the claim, an identity that cannot be read right now, or a platform without that kernel guarantee - is uncertain and preserves the claim, because releasing on doubt is how two pollers end up on one source.
+A pid that is provably reused strands nothing: its generation reads as gone, `reconcile` relaunches the source, and the stranger's group is never signalled.
+
 **Recover orphaned claims**
 
-A stale claim whose process group still has members is one `reconcile` never displaces, and the two shapes it comes in recover differently.
-`reconcile` preserves such a claim without signalling the ambiguous group or starting a replacement: the group check probes the runner's own process group, which contains its polling source child, so surviving members can mean that child is still attached to the session the source collects from, and a replacement would put a second destructive poller on it.
+A claim whose generation is not proved gone is one `reconcile` never displaces, and the shapes it comes in recover differently.
+`reconcile` preserves such a claim without signalling the group or starting a replacement: the runner's process group contains its polling source child, so surviving members can mean that child, or something it spawned, is still attached to the session the source collects from, and a replacement would put a second destructive poller on it.
 
-`list` reports both shapes as `orphaned`.
+`list` reports every such shape as `orphaned`.
 
-**Reused PID with surviving group members**
+**Stale leader**
 
-When the recorded pid is alive under a different identity but the group still has members, the claim boundary itself does not consult the process group.
+When the recorded pid is alive but no longer reads as the runner that claimed - its poll child still alive, or its group holding members nobody can identify - the claim boundary itself does not consult the process group.
 In this case, `bin/fm-procevent.sh start <source-id>` reclaims the claim only if it can tidy the dead generation's reservation records.
 Otherwise it refuses with `cannot claim source`.
 
 Tidy-up is waived only for a generation proved gone.
 This generation does not meet that condition.
-That hand-run command is the recovery path, taken by someone who has checked that nothing is still polling the source.
+That hand-run command is the recovery path, taken by someone who has checked that nothing is still polling the source; the wake says whether the recorded poll child is still alive, so that check may already be answered.
 
 That asymmetry between the automatic path and the deliberate one is the design rather than an inconsistency, and it is not a claim-level invariant: nothing below `reconcile` enforces it.
 
@@ -2173,7 +2182,7 @@ If the leader died from anything other than the stop's own signal and its group 
 It reports `already owned` and changes nothing.
 
 `retire`, `reconcile`, `sweep-home`, and the guard all refuse the surviving group permanently, so the source stops listening.
-Recovery there is a human verifying whether the dead runner's polling child is still attached to the source; once that process group is empty the generation reads as gone and the next `reconcile` reclaims the source on its own.
+Recovery there is a human verifying whether the dead runner's polling child is still attached to the source - the wake says whether the recorded child is, or whether the surviving members are ones this home cannot identify - and once that process group is empty the generation reads as gone and the next `reconcile` reclaims the source on its own.
 
 Nothing automatic signals that group, and whether it may ever be signalled remains an open decision; the repaired guard does not close this gap.
 
@@ -2182,7 +2191,7 @@ Nothing automatic signals that group, and whether it may ever be signalled remai
 The first `reconcile` that strands either kind of claim generation publishes a durable `check` wake.
 It names the source and the recovery step:
 
-- For a reused pid, the `start` command.
+- For a stale leader, the `start` command.
 - For a leaderless group, the check to make.
 
 Later cycles stay silent for the same generation.
@@ -2195,13 +2204,13 @@ Every one of those is keyed by claim token and every replacement claims a fresh 
 
 Making any of them a precondition is what leaves a provably dead runner owning its source permanently, because none of those conditions clears on its own.
 
-- Ordinary release and reclamation still attempt reservation cleanup and require it unless both owner staleness and whole-group absence prove the generation gone.
+- Ordinary release and reclamation still attempt reservation cleanup and require it unless owner staleness and the identity-aware group read above prove the generation gone.
 - The narrow live-owner terminal-self-retirement path also attempts cleanup but tolerates its own still-in-flight reservation, which the runner removes on the normal end-of-capture path; exact home, PID, and claim-token ownership remains mandatory before the claim is released.
 
 **Stop refusals and residual races**
 
 - If identity cannot be established before the first signal, or a surviving owned group cannot be proved stopped, the operation preserves the registration and claim for safe retry rather than adding a second owner.
-- A live PID whose identity no longer matches is refused before the first signal.
+- A live PID whose identity no longer matches is refused before the first signal, unless its generation is proved gone as above, in which case there is nothing left to signal and the claim is reclaimed without one.
 - Identity and process-group verification cannot be made atomic with signalling in portable shell: the reaper signals only a target it has verified as the recorded generation, but PID and group reuse remain possible in the narrow interval between verification and the signal.
 - Launch pacing is the primary host-wedge protection; watchdog cleanup is a backstop.
 
