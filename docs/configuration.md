@@ -1509,7 +1509,7 @@ Arm the check once per home with `bin/fm-tool-update-check.sh arm`.
 
 ## Orphan process sweep (state/orphan-sweep.check.sh)
 
-[`bin/fm-orphan-sweep.sh`](../bin/fm-orphan-sweep.sh) stops orphaned no-mistakes validation databases, and reports, without acting, any other process that has kept more than 80% of a core busy for over an hour.
+[`bin/fm-orphan-sweep.sh`](../bin/fm-orphan-sweep.sh) stops orphaned no-mistakes validation databases, and reports, without acting, any other process outside operating-system paths that has kept more than 80% of a core busy for over an hour.
 It is off until a home arms it, because it is the one check that signals processes.
 The sweep covers every process of the current user on this machine, so arm it in one home per machine.
 
