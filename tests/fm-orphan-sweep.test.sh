@@ -23,7 +23,7 @@ RUN=01M6NG9MYSZ2FVXZ0NAMPQ6YMT
 EVIDENCE=/var/folders/xx/T/no-mistakes-evidence
 LSTART='Thu Nov  5 10:00:00 2026'
 BRIDGE_CMD='node /Users/me/.nvm/versions/node/v22/lib/node_modules/chrome-devtools-axi/dist/bin/chrome-devtools-axi-bridge.js'
-MYSQLD_CMD="/opt/homebrew/opt/mysql/bin/mysqld --no-defaults --datadir=$EVIDENCE/$RUN/mysql/data --socket=/tmp/nm1234.sock --skip-networking"
+MYSQLD_CMD="/opt/homebrew/opt/mysql/bin/mysqld --no-defaults --datadir=$EVIDENCE/$RUN/mysql/data --socket=/tmp/nmfmtest$$m.sock --skip-networking"
 
 # new_world <name>: a home, an empty table, and the fakes. Sets W.
 new_world() {
