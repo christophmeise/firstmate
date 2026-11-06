@@ -307,8 +307,11 @@ live_paths_read() {
   local state meta task line
   [ "$LIVE_PATHS_READ" = 0 ] || return 0
   LIVE_PATHS_READ=1
-  if ! fm_local_firstmate_state_dirs "$STATE"; then
-    LIVE_PATHS_ERROR=$FM_LOCAL_FIRSTMATE_ERROR
+  # Older libraries lack this enumerator. "Could not list the live tasks" must
+  # never read as "there are none", whatever the reason it failed.
+  if ! command -v fm_local_firstmate_state_dirs >/dev/null 2>&1 \
+    || ! fm_local_firstmate_state_dirs "$STATE"; then
+    LIVE_PATHS_ERROR=${FM_LOCAL_FIRSTMATE_ERROR:-live tasks could not be listed}
     return 0
   fi
   for state in "${FM_LOCAL_FIRSTMATE_STATES[@]}"; do

@@ -267,6 +267,32 @@ test_an_unreadable_home_registry_leaves_everything_alone() {
   pass "live tasks that cannot be enumerated leave every candidate alone"
 }
 
+# A home can run older code than this script expects. Losing either library
+# function must cost the sweep its candidates, never its safety check.
+test_missing_liveness_libraries_leave_everything_alone() {
+  local out SWEEP
+  new_world oldlibs
+  mkdir -p "$W/code"
+  cp -R "$ROOT/bin" "$W/code/bin"
+  printf 'unset -f fm_local_firstmate_state_dirs\n' >> "$W/code/bin/fm-wake-lib.sh"
+  SWEEP="$W/code/bin/fm-orphan-sweep.sh"
+  orphan_bridge 4041
+  out=$(sweep check 2>/dev/null)
+  assert_nothing_signalled "a home whose libraries cannot list live tasks"
+  assert_contains "$out" "live tasks could not be listed" "a blind sweep was silent"
+
+  new_world oldlibs-run
+  mkdir -p "$W/code"
+  cp -R "$ROOT/bin" "$W/code/bin"
+  printf 'unset -f fm_nm_state_db fm_nm_run_status_class\n' >> "$W/code/bin/fm-nm-run-lib.sh"
+  SWEEP="$W/code/bin/fm-orphan-sweep.sh"
+  orphan_mysqld 4042
+  out=$(sweep check 2>/dev/null)
+  assert_nothing_signalled "a home whose libraries cannot read a run's status"
+  assert_contains "$out" "could not be read" "a blind sweep was silent"
+  pass "older libraries that cannot answer leave every candidate alone"
+}
+
 test_a_bridge_in_use_is_refused() {
   local out
   new_world bridgechild
@@ -664,6 +690,7 @@ fm_test_run \
   test_a_live_task_in_this_home_keeps_its_process \
   test_a_live_task_in_another_home_keeps_its_process \
   test_an_unreadable_home_registry_leaves_everything_alone \
+  test_missing_liveness_libraries_leave_everything_alone \
   test_a_bridge_in_use_is_refused \
   test_an_unreadable_process_is_refused \
   test_only_the_allowlist_can_be_stopped \
