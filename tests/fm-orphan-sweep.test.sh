@@ -88,7 +88,8 @@ row() {
     "$2" "$3" "${7:-$MY_UID}" "$4" "$5" 0.0 "$LSTART" "$6" >> "$W/ps/$1"
 }
 
-# A finished run's database and an idle bridge, both orphaned, old, and quiet.
+# A finished run's database, orphaned, old, and quiet, and a bridge in the same
+# state, which belongs to another owner and must never be signalled here.
 orphan_mysqld() {  # <pid>
   row 1 "$1" 1 '22:00:00' '0:01.00' "$MYSQLD_CMD"
   printf '%s\n' /private/var/folders/xx/worktrees/gone > "$W/lsof/$1.cwd"
@@ -136,14 +137,16 @@ test_a_process_that_ignores_sigterm_gets_sigkill() {
   pass "a process that ignores SIGTERM is killed after the grace"
 }
 
-test_an_idle_bridge_is_stopped() {
+test_a_bridge_orphan_is_never_signalled() {
   local out
   new_world bridge
   orphan_bridge 4003
   out=$(sweep check)
-  assert_equals "-TERM 4003" "$(killed)" "the idle bridge was not stopped"
-  assert_contains "$out" "chrome-devtools-axi-bridge pid 4003" "the bridge stop was not reported"
-  pass "an old idle browser helper is stopped"
+  assert_equals "" "$out" "a bridge orphan was reported"
+  assert_nothing_signalled "a bridge orphan"
+  assert_absent "$W/home/state/orphan-sweep.log" "a bridge orphan reached the stop audit"
+  assert_not_contains "$(sweep --dry-run)" "4003" "a dry run treated a bridge orphan as a candidate"
+  pass "an old idle browser bridge is never signalled, because the reaper owns it"
 }
 
 test_a_clean_table_is_silent() {
@@ -163,27 +166,22 @@ test_a_process_with_a_living_parent_is_refused() {
   orphan_mysqld 4004
   sed -i.bak 's/^\( *4004 *\)1 /\1777 /' "$W/ps/1"
   rm -f "$W/ps/1.bak"
-  orphan_bridge 4005
-  sed -i.bak 's/^\( *4005 *\)1 /\1778 /' "$W/ps/1"
-  rm -f "$W/ps/1.bak"
   out=$(sweep check)
   assert_equals "" "$out" "a parented process was reported"
   assert_nothing_signalled "a process with a living parent"
   pass "a process whose parent is alive is left alone"
 }
 
-test_a_young_process_is_refused_per_class() {
+test_a_young_database_is_refused() {
   local out
   new_world young
   row 1 4006 1 '01:59:00' '0:01.00' "$MYSQLD_CMD"
   printf '/gone\n' > "$W/lsof/4006.cwd"
   printf 'completed\n' > "$W/runs/$RUN"
-  row 1 4007 1 '23:59:00' '0:01.00' "$BRIDGE_CMD"
-  printf '/gone\n' > "$W/lsof/4007.cwd"
   out=$(sweep check)
-  assert_equals "" "$out" "a young process was reported"
-  assert_nothing_signalled "a young process"
-  pass "a process under its class age threshold is left alone"
+  assert_equals "" "$out" "a young database was reported"
+  assert_nothing_signalled "a young database"
+  pass "a database under its age threshold is left alone"
 }
 
 test_an_active_run_keeps_its_database() {
@@ -229,16 +227,16 @@ test_a_live_task_in_this_home_keeps_its_process() {
   local out
   new_world livetask
   mkdir -p "$W/worktree/sub"
-  orphan_bridge 4012
+  orphan_mysqld 4012
   (cd "$W/worktree/sub" && pwd -P) > "$W/lsof/4012.cwd"
   printf 'kind=ship\nworktree=%s\ntasktmp=/tmp/nope\n' "$W/worktree" > "$W/home/state/some-task-t1.meta"
   out=$(sweep check)
-  assert_equals "" "$out" "a live task's helper was reported"
-  assert_nothing_signalled "a live task's helper"
+  assert_equals "" "$out" "a live task's database was reported"
+  assert_nothing_signalled "a live task's database"
 
   rm -f "$W/home/state/some-task-t1.meta"
   sweep check >/dev/null
-  assert_equals "-TERM 4012" "$(killed)" "the same helper was not stopped once its task was gone"
+  assert_equals "-TERM 4012" "$(killed)" "the same database was not stopped once its task was gone"
   pass "a process in a live task's worktree is left alone"
 }
 
@@ -262,7 +260,7 @@ test_an_unreadable_home_registry_leaves_everything_alone() {
   local out
   new_world badregistry
   printf -- '- not a valid record\n' > "$W/home/data/secondmates.md"
-  orphan_bridge 4014
+  orphan_mysqld 4014
   out=$(sweep check)
   assert_nothing_signalled "an unreadable home registry"
   assert_contains "$out" "left alone" "a blind sweep was silent"
@@ -278,7 +276,7 @@ test_missing_liveness_libraries_leave_everything_alone() {
   cp -R "$ROOT/bin" "$W/code/bin"
   printf 'unset -f fm_local_firstmate_state_dirs\n' >> "$W/code/bin/fm-wake-lib.sh"
   SWEEP="$W/code/bin/fm-orphan-sweep.sh"
-  orphan_bridge 4041
+  orphan_mysqld 4041
   out=$(sweep check 2>/dev/null)
   assert_nothing_signalled "a home whose libraries cannot list live tasks"
   assert_contains "$out" "live tasks could not be listed" "a blind sweep was silent"
@@ -295,28 +293,21 @@ test_missing_liveness_libraries_leave_everything_alone() {
   pass "older libraries that cannot answer leave every candidate alone"
 }
 
-test_a_bridge_in_use_is_refused() {
+test_a_connected_database_is_refused() {
   local out
-  new_world bridgechild
-  orphan_bridge 4015
-  row 1 4016 4015 '10-00:00:00' '0:01.00' 'chrome-devtools-mcp'
-  out=$(sweep check)
-  assert_equals "" "$out" "a bridge with a child was reported"
-  assert_nothing_signalled "a bridge with a child"
-
-  new_world bridgeconn
-  orphan_bridge 4017
+  new_world dbconn
+  orphan_mysqld 4017
   : > "$W/lsof/4017.established"
   out=$(sweep check)
-  assert_equals "" "$out" "a connected bridge was reported"
-  assert_nothing_signalled "a connected bridge"
-  pass "a bridge with a child or an established connection is left alone"
+  assert_equals "" "$out" "a connected database was reported"
+  assert_nothing_signalled "a connected database"
+  pass "a database with an established connection is left alone"
 }
 
 test_an_unreadable_process_is_refused() {
   local out
   new_world nolsof
-  orphan_bridge 4018
+  orphan_mysqld 4018
   : > "$W/lsof/4018.fail"
   out=$(sweep check)
   assert_nothing_signalled "a process lsof cannot read"
@@ -330,24 +321,25 @@ assert_refused_with_one_line() {  # <pid> <reason>
   local out
   out=$(sweep check)
   assert_nothing_signalled "$2"
-  assert_contains "$out" "chrome-devtools-axi-bridge pid $1 is orphaned but was left alone: $2" "the refusal was not reported"
+  assert_contains "$out" "mysqld pid $1 is orphaned but was left alone: $2" "the refusal was not reported"
   assert_equals 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "the refusal was not one line"
 }
 
 test_unreadable_connections_are_refused() {
   new_world notcp
-  orphan_bridge 4043
+  orphan_mysqld 4043
   : > "$W/lsof/4043.tcp-fail"
   assert_refused_with_one_line 4043 "connections could not be read"
   pass "a process whose connections cannot be read is left alone"
 }
 
-test_a_table_lost_before_the_child_check_is_refused() {
-  new_world nochildren
-  orphan_bridge 4044
+test_a_table_lost_before_the_signal_sends_nothing() {
+  new_world nosignal
+  orphan_mysqld 4044
   : > "$W/ps.fail.2"
-  assert_refused_with_one_line 4044 "process table could not be read"
-  pass "a bridge whose children cannot be read is left alone"
+  sweep check >/dev/null
+  assert_nothing_signalled "a pid whose identity could not be re-verified"
+  pass "a table lost right before SIGTERM sends nothing"
 }
 
 test_unreadable_task_records_are_refused() {
@@ -357,7 +349,7 @@ test_unreadable_task_records_are_refused() {
     return 0
   fi
   new_world badmeta
-  orphan_bridge 4045
+  orphan_mysqld 4045
   : > "$W/home/state/some-task-t1.meta"
   chmod 000 "$W/home/state/some-task-t1.meta"
   assert_refused_with_one_line 4045 "task record is unreadable at $W/home/state/some-task-t1.meta"
@@ -368,7 +360,7 @@ test_unreadable_task_records_are_refused() {
   mkdir -p "$child/state"
   printf -- '- mate-a - Second mate (home: %s; scope: all; projects: none; added 2026-01-01)\n' "$child" \
     > "$W/home/data/secondmates.md"
-  orphan_bridge 4046
+  orphan_mysqld 4046
   chmod 000 "$child/state"
   assert_refused_with_one_line 4046 "task records are unreadable at $child/state"
   chmod 700 "$child/state"
@@ -396,7 +388,7 @@ node /tmp/chrome-devtools-axi-bridge.js
 vim $BRIDGE_CMD
 /Applications/Mail.app/Contents/MacOS/Mail
 EOF
-  row 1 6000 1 '30-00:00:00' '0:01.00' "$BRIDGE_CMD" 12345
+  row 1 6000 1 '30-00:00:00' '0:01.00' "$MYSQLD_CMD" 12345
   out=$(sweep check)
   assert_equals "" "$out" "a process off the allowlist was reported"
   assert_nothing_signalled "a process off the allowlist"
@@ -443,7 +435,7 @@ test_the_interval_gate_holds_whatever_the_cadence() {
   INTERVAL_OVERRIDE=1800
   NOW_OVERRIDE=1000000
   sweep check >/dev/null
-  orphan_bridge 4023
+  orphan_mysqld 4023
   NOW_OVERRIDE=1001799
   out=$(sweep check)
   assert_equals "" "$out" "a sweep ran inside the interval"
@@ -459,7 +451,7 @@ test_the_interval_gate_holds_whatever_the_cadence() {
 test_the_default_interval_is_thirty_minutes() {
   new_world gatedefault
   env PATH="$W/fakebin:$PATH" FAKE="$W" FM_HOME="$W/home" NM_HOME="$W/nm" FM_ORPHAN_SWEEP_NOW=1000000 "$SWEEP" check
-  orphan_bridge 4024
+  orphan_mysqld 4024
   env PATH="$W/fakebin:$PATH" FAKE="$W" FM_HOME="$W/home" NM_HOME="$W/nm" FM_ORPHAN_SWEEP_NOW=1001799 "$SWEEP" check
   assert_nothing_signalled "the default gate"
   pass "the default interval is 30 minutes"
@@ -559,10 +551,10 @@ test_an_entry_longer_than_the_cap_is_reported_once_shortened() {
   long=/$(awk 'BEGIN { for (i = 0; i < 1200; i++) printf "a" }')
   printf -- '- mate-a - Second mate (home: %s; scope: all; projects: none; added 2026-01-01)\n' "$long" \
     > "$W/home/data/secondmates.md"
-  orphan_bridge 4047
+  orphan_mysqld 4047
   out=$(sweep check)
   assert_nothing_signalled "an unavailable home"
-  assert_contains "$out" "chrome-devtools-axi-bridge pid 4047 is orphaned but was left alone" "an entry too long for any line was never reported"
+  assert_contains "$out" "mysqld pid 4047 is orphaned but was left alone" "an entry too long for any line was never reported"
   [ "${#out}" -le 1000 ] || fail "the report ran to ${#out} characters"
   assert_equals "" "$(sweep check)" "the shortened entry was reported twice"
   pass "an entry too long for any line is shortened and reported once"
@@ -571,13 +563,13 @@ test_an_entry_longer_than_the_cap_is_reported_once_shortened() {
 test_a_stop_keeps_the_line_and_the_reports_it_leaves_no_room_for_wait() {
   local pid out next waiting=
   new_world stopflood
-  orphan_bridge 4048
+  orphan_mysqld 4048
   for pid in $(seq 7200 7219); do
     row 1 "$pid" 500 '03:00:00' '170:00.00' "/usr/local/bin/python3 /opt/jobs/a-long-worker-path/crunch-$pid.py --with-a-long-argument"
   done
   out=$(sweep check)
-  assert_equals "-TERM 4048" "$(killed)" "the bridge was not stopped"
-  assert_contains "$out" "orphan sweep: stopped chrome-devtools-axi-bridge pid 4048 (SIGTERM); look: " "the stop did not lead the line"
+  assert_equals "-TERM 4048" "$(killed)" "the database was not stopped"
+  assert_contains "$out" "orphan sweep: stopped mysqld pid 4048 (SIGTERM); look: " "the stop did not lead the line"
   [ "${#out}" -le 1000 ] || fail "the report ran to ${#out} characters"
   assert_contains "$out" ", left alone" "the stop left no report on the line"
   case "$out" in
@@ -682,11 +674,11 @@ test_the_audit_log_is_capped() {
   new_world auditcap
   awk 'BEGIN { for (i = 0; i < 2000; i++) printf "2026-01-01T00:00:00Z\tstopped\tmysqld\t%d\tx\tSIGTERM\twhy\t\tcmd padding padding padding\n", i }' \
     > "$W/home/state/orphan-sweep.log"
-  orphan_bridge 4030
+  orphan_mysqld 4030
   sweep check >/dev/null
   size=$(wc -c < "$W/home/state/orphan-sweep.log" | tr -d ' ')
   [ "$size" -le 65536 ] || fail "the audit log grew to $size bytes"
-  assert_contains "$(tail -1 "$W/home/state/orphan-sweep.log")" "chrome-devtools-axi-bridge" "the newest entry was dropped"
+  assert_contains "$(tail -1 "$W/home/state/orphan-sweep.log")" "4030" "the newest entry was dropped"
   assert_contains "$(head -1 "$W/home/state/orphan-sweep.log")" "2026-01-01T00:00:00Z" "the cut left a partial line"
   pass "the audit log stays under its cap and keeps the newest entries"
 }
@@ -695,8 +687,8 @@ test_dry_run_changes_nothing_and_ignores_the_gate() {
   local out before
   new_world dryrun
   orphan_mysqld 4031
-  orphan_bridge 4032
-  row 1 4033 1 '01:00:00' '0:01.00' "$BRIDGE_CMD"
+  orphan_mysqld 4032
+  row 1 4033 1 '01:00:00' '0:01.00' "$MYSQLD_CMD"
   row 1 7006 500 '03:00:00' '170:00.00' '/usr/local/bin/python3 crunch.py'
   NOW_OVERRIDE=3000000
   INTERVAL_OVERRIDE=1800
@@ -705,14 +697,14 @@ test_dry_run_changes_nothing_and_ignores_the_gate() {
   rm -f "$W/ps.count"
   : > "$W/ps/1"
   orphan_mysqld 4031
-  orphan_bridge 4032
-  row 1 4033 1 '01:00:00' '0:01.00' "$BRIDGE_CMD"
+  orphan_mysqld 4032
+  row 1 4033 1 '01:00:00' '0:01.00' "$MYSQLD_CMD"
   row 1 7007 500 '03:00:00' '170:00.00' '/usr/local/bin/python3 other.py'
   before=$(cat "$W/home/state/.orphan-sweep")
   out=$(sweep --dry-run)
   assert_contains "$out" "would stop: mysqld pid 4031" "the dry run does not name the database"
-  assert_contains "$out" "would stop: chrome-devtools-axi-bridge pid 4032" "the dry run does not name the bridge"
-  assert_contains "$out" "would leave: chrome-devtools-axi-bridge pid 4033" "the dry run does not name what it leaves"
+  assert_contains "$out" "would stop: mysqld pid 4032" "the dry run does not name every database"
+  assert_contains "$out" "would leave: mysqld pid 4033" "the dry run does not name what it leaves"
   assert_contains "$out" "would report: /usr/local/bin/python3 other.py" "the dry run does not name a report"
   assert_contains "$(sweep check --dry-run)" "would stop: mysqld pid 4031" "check --dry-run differs"
   assert_nothing_signalled "a dry run"
@@ -725,7 +717,7 @@ test_dry_run_changes_nothing_and_ignores_the_gate() {
 test_an_unreadable_process_table_stops_nothing_and_says_so_once() {
   local out
   new_world psfail
-  orphan_bridge 4034
+  orphan_mysqld 4034
   : > "$W/ps.fail"
   out=$(sweep check)
   assert_contains "$out" "process table could not be read" "a blind sweep was silent"
@@ -745,7 +737,6 @@ test_invalid_settings_and_actions_refuse() {
 FM_ORPHAN_SWEEP_INTERVAL 30
 FM_ORPHAN_SWEEP_INTERVAL soon
 FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE 0
-FM_ORPHAN_SWEEP_BRIDGE_MIN_AGE 59
 FM_ORPHAN_SWEEP_TERM_GRACE 0
 FM_ORPHAN_SWEEP_TERM_GRACE 61
 EOF
@@ -789,33 +780,33 @@ test_arm_refuses_a_symlink_at_the_shim_path() {
 test_armed_check_wakes_the_watcher() {
   local status=0
   new_world wake
-  orphan_bridge 4035
+  orphan_mysqld 4035
   FM_HOME="$W/home" "$SWEEP" arm >/dev/null || fail "could not arm the sweep"
   env FM_HOME="$W/home" NM_HOME="$W/nm" FAKE="$W" PATH="$W/fakebin:$PATH" FM_CHECK_TIMEOUT=30 \
     FM_ORPHAN_SWEEP_TERM_GRACE=1 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 \
     "$CHECKPOINT" --seconds 60 >"$W/out.txt" 2>"$W/err.txt" || status=$?
   expect_code 0 "$status" "watcher checkpoint exit"
   assert_contains "$(cat "$W/out.txt")" "check:" "the armed sweep did not reach the watcher as a check wake"
-  assert_contains "$(cat "$W/out.txt")" "orphan sweep: stopped chrome-devtools-axi-bridge pid 4035" "the wake did not carry the sweep line"
+  assert_contains "$(cat "$W/out.txt")" "orphan sweep: stopped mysqld pid 4035" "the wake did not carry the sweep line"
   pass "the armed sweep reaches the watcher as an ordinary check wake"
 }
 
 test_a_finished_runs_database_is_stopped_and_audited
 test_a_process_that_ignores_sigterm_gets_sigkill
-test_an_idle_bridge_is_stopped
+test_a_bridge_orphan_is_never_signalled
 test_a_clean_table_is_silent
 test_a_process_with_a_living_parent_is_refused
-test_a_young_process_is_refused_per_class
+test_a_young_database_is_refused
 test_an_active_run_keeps_its_database
 test_an_unanswerable_run_leaves_the_database_and_says_so_once
 test_a_live_task_in_this_home_keeps_its_process
 test_a_live_task_in_another_home_keeps_its_process
 test_an_unreadable_home_registry_leaves_everything_alone
 test_missing_liveness_libraries_leave_everything_alone
-test_a_bridge_in_use_is_refused
+test_a_connected_database_is_refused
 test_an_unreadable_process_is_refused
 test_unreadable_connections_are_refused
-test_a_table_lost_before_the_child_check_is_refused
+test_a_table_lost_before_the_signal_sends_nothing
 test_unreadable_task_records_are_refused
 test_only_the_allowlist_can_be_stopped
 test_a_reused_pid_is_never_signalled

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# fm-orphan-sweep.sh - stop orphaned local processes left behind by workers and
-# validation runs, and report anything else that is burning a core.
+# fm-orphan-sweep.sh - stop orphaned no-mistakes validation databases, and report
+# anything else that is burning a core.
 #
 # Usage:
 #   fm-orphan-sweep.sh [check] [--dry-run]
@@ -26,14 +26,12 @@
 # What may be stopped. A process is stopped only when every one of these holds,
 # and any question that cannot be answered leaves the process alone:
 #
-#   allowlist   it is one of the two classes below, matched on its full command
-#               line, and owned by the current user
+#   allowlist   it is the one class below, matched on its full command line, and
+#               owned by the current user
 #   orphaned    its ppid is 1; a living parent, whoever it is, means leave it
-#   age         it is older than its class threshold
+#   age         it is older than the class threshold
 #   not live    its working directory is not inside the worktree or temp
-#               directory of any task record in any local home (a daemonized
-#               helper keeps the worktree it was launched from as its working
-#               directory, which is what ties it to a worker), and it holds no
+#               directory of any task record in any local home, and it holds no
 #               established TCP connection
 #
 #   mysqld      a no-mistakes validation database: exactly one
@@ -41,14 +39,11 @@
 #               run must also be recorded as finished in no-mistakes' own
 #               database; a pending, running, unknown, or unrecorded run leaves
 #               it alone. Default minimum age 2 hours.
-#   bridge      node .../chrome-devtools-axi/dist/bin/chrome-devtools-axi-bridge.js
-#               with no other arguments. Its ppid is always 1 because it
-#               daemonizes, so what separates a dead one is having no child
-#               process. Default minimum age 24 hours.
 #
-# Only these two classes are on the list because they are the only ones with
-# evidence behind them. A new class needs the same: a real observed orphan, a
-# narrow match, and a check that proves it belongs to nothing live.
+# chrome-devtools-axi bridges are not on the list and are never signalled here:
+# bin/fm-automation-browser-reap.sh, which the watcher runs, is their only owner.
+# A new class needs what this one has: a real observed orphan, a narrow match, a
+# check that proves it belongs to nothing live, and no other owner.
 #
 # How it stops. Candidates are evaluated and sent SIGTERM one at a time, then
 # share one bounded wait, then whatever remains gets SIGKILL. Immediately before
@@ -82,7 +77,6 @@
 #   FM_ORPHAN_SWEEP_INTERVAL        seconds between sweeps, default 1800, 0 disables
 #                                   the gate, otherwise 60..86400
 #   FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE  seconds, default 7200, at least 60
-#   FM_ORPHAN_SWEEP_BRIDGE_MIN_AGE  seconds, default 86400, at least 60
 #   FM_ORPHAN_SWEEP_TERM_GRACE      seconds between SIGTERM and SIGKILL, default 10,
 #                                   1..60, cut down to fit the watcher's per-check
 #                                   bound (FM_CHECK_TIMEOUT) when it would not
@@ -109,7 +103,7 @@ KILL_WAIT_SECS=3
 HOT_SHARE_PERCENT=80
 HOT_SECS=3600
 HOT_MIN_SAMPLE_SECS=60
-SETTINGS='FM_ORPHAN_SWEEP_INTERVAL FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE FM_ORPHAN_SWEEP_BRIDGE_MIN_AGE FM_ORPHAN_SWEEP_TERM_GRACE'
+SETTINGS='FM_ORPHAN_SWEEP_INTERVAL FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE FM_ORPHAN_SWEEP_TERM_GRACE'
 
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
@@ -160,8 +154,6 @@ INTERVAL=${FM_ORPHAN_SWEEP_INTERVAL:-1800}
   '0 or a whole number from 60 to 86400'
 MYSQLD_MIN_AGE=${FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE:-7200}
 whole_number_setting FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE "$MYSQLD_MIN_AGE" 60 99999999 'a whole number of at least 60'
-BRIDGE_MIN_AGE=${FM_ORPHAN_SWEEP_BRIDGE_MIN_AGE:-86400}
-whole_number_setting FM_ORPHAN_SWEEP_BRIDGE_MIN_AGE "$BRIDGE_MIN_AGE" 60 99999999 'a whole number of at least 60'
 TERM_GRACE=${FM_ORPHAN_SWEEP_TERM_GRACE:-10}
 whole_number_setting FM_ORPHAN_SWEEP_TERM_GRACE "$TERM_GRACE" 1 60 'a whole number from 1 to 60'
 
@@ -266,27 +258,16 @@ classify() {  # <command>
   RUN_ID=
   read -r -a argv <<<"$1"
   [ "${#argv[@]}" -ge 1 ] || return 1
-  case "${argv[0]##*/}" in
-    mysqld)
-      for token in "${argv[@]}"; do
-        case "$token" in
-          --datadir=*) datadir=${token#--datadir=}; count=$((count + 1)) ;;
-        esac
-      done
-      [ "$count" = 1 ] || return 1
-      [[ "$datadir" =~ ^/.*/no-mistakes-evidence/([0-9A-HJKMNP-TV-Z]{26})/mysql/data/?$ ]] || return 1
-      RUN_ID=${BASH_REMATCH[1]}
-      CLASS=mysqld
-      ;;
-    node)
-      [ "${#argv[@]}" = 2 ] || return 1
-      case "${argv[1]}" in
-        /*/chrome-devtools-axi/dist/bin/chrome-devtools-axi-bridge.js) CLASS=chrome-devtools-axi-bridge ;;
-        *) return 1 ;;
-      esac
-      ;;
-    *) return 1 ;;
-  esac
+  [ "${argv[0]##*/}" = mysqld ] || return 1
+  for token in "${argv[@]}"; do
+    case "$token" in
+      --datadir=*) datadir=${token#--datadir=}; count=$((count + 1)) ;;
+    esac
+  done
+  [ "$count" = 1 ] || return 1
+  [[ "$datadir" =~ ^/.*/no-mistakes-evidence/([0-9A-HJKMNP-TV-Z]{26})/mysql/data/?$ ]] || return 1
+  RUN_ID=${BASH_REMATCH[1]}
+  CLASS=mysqld
 }
 
 # --- liveness ---------------------------------------------------------------
@@ -398,11 +379,10 @@ decide() {  # <verdict> <why>
   [ "$1" = stop ]
 }
 
-evaluate() {  # <pid> <ppid> <elapsed> <class> <run-id>
-  local pid=$1 ppid=$2 elapsed=$3 class=$4 run=$5 min_age cwd status word children
+evaluate() {  # <pid> <ppid> <elapsed> <run-id>
+  local pid=$1 ppid=$2 elapsed=$3 run=$4 cwd status word
   [ "$ppid" = 1 ] || { decide leave "parent $ppid is alive"; return; }
-  if [ "$class" = mysqld ]; then min_age=$MYSQLD_MIN_AGE; else min_age=$BRIDGE_MIN_AGE; fi
-  [ "$elapsed" -ge "$min_age" ] || { decide leave "younger than ${min_age}s"; return; }
+  [ "$elapsed" -ge "$MYSQLD_MIN_AGE" ] || { decide leave "younger than ${MYSQLD_MIN_AGE}s"; return; }
 
   live_paths_read
   [ -z "$LIVE_PATHS_ERROR" ] || { decide unverified "$LIVE_PATHS_ERROR"; return; }
@@ -424,20 +404,12 @@ evaluate() {  # <pid> <ppid> <elapsed> <class> <run-id>
     *) decide unverified "connections could not be read"; return ;;
   esac
 
-  if [ "$class" = mysqld ]; then
-    word=$(run_status "$run") || word=
-    case "$(fm_nm_run_status_class "$word")" in
-      terminal) decide stop "validation database of $word run $run" ;;
-      live) decide leave "run $run is active" ;;
-      *) decide unverified "status of run $run could not be read" ;;
-    esac
-    return
-  fi
-
-  snapshot || { decide unverified "process table could not be read"; return; }
-  children=$(printf '%s\n' "$SNAP" | awk -F'\t' -v p="$pid" '$2 == p { n++ } END { print n + 0 }')
-  [ "$children" = 0 ] || { decide leave "has $children child process(es)"; return; }
-  decide stop "idle browser helper with no child or connection"
+  word=$(run_status "$run") || word=
+  case "$(fm_nm_run_status_class "$word")" in
+    terminal) decide stop "validation database of $word run $run" ;;
+    live) decide leave "run $run is active" ;;
+    *) decide unverified "status of run $run could not be read" ;;
+  esac
 }
 
 # --- cleanup of what a stopped process owned --------------------------------
@@ -664,11 +636,9 @@ PENDING=
 STOPPED_PIDS=
 
 finish_stop() {  # <pid> <class> <start> <why> <command> <signal>
-  local removed=
-  if [ "$2" = mysqld ]; then
-    removed=$(remove_owned_files "$1" "$5" | tr '\n' ' ')
-    removed=${removed% }
-  fi
+  local removed
+  removed=$(remove_owned_files "$1" "$5" | tr '\n' ' ')
+  removed=${removed% }
   audit_append stopped "$2" "$1" "$3" "$6" "$4" "$removed" "$5" || true
   add_stopped "$2 pid $1 ($6)"
   STOPPED_PIDS="$STOPPED_PIDS $1"
@@ -737,7 +707,7 @@ sweep_candidates() {
     [ -n "$pid" ] || continue
     classify "$command" || continue
     [ "$(date +%s)" -lt "$deadline" ] || break
-    if evaluate "$pid" "$ppid" "$elapsed" "$CLASS" "$RUN_ID"; then
+    if evaluate "$pid" "$ppid" "$elapsed" "$RUN_ID"; then
       if [ "$DRY_RUN" = 1 ]; then
         printf 'would stop: %s pid %s, age %s: %s\n' "$CLASS" "$pid" "$(human_age "$elapsed")" "$WHY"
       elif signal_exact TERM "$pid" "$start" "$command"; then
