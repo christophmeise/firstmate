@@ -80,6 +80,8 @@
 #   FM_ORPHAN_SWEEP_TERM_GRACE      seconds between SIGTERM and SIGKILL, default 10,
 #                                   1..60, cut down to fit the watcher's per-check
 #                                   bound (FM_CHECK_TIMEOUT) when it would not
+#   FM_ORPHAN_SWEEP_PROBE_SECS      seconds allowed for one ps, lsof, or sqlite3 read,
+#                                   default 5, 1..30, cut to a third of that bound
 set -u
 export LC_ALL=C
 
@@ -98,12 +100,11 @@ REPORT_PREFIX='orphan sweep: '
 REPORT_LOOK='look: '
 REPORT_TEXT=
 AUDIT_MAX_BYTES=65536
-PROBE_SECS=5
 KILL_WAIT_SECS=3
 HOT_SHARE_PERCENT=80
 HOT_SECS=3600
 HOT_MIN_SAMPLE_SECS=60
-SETTINGS='FM_ORPHAN_SWEEP_INTERVAL FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE FM_ORPHAN_SWEEP_TERM_GRACE'
+SETTINGS='FM_ORPHAN_SWEEP_INTERVAL FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE FM_ORPHAN_SWEEP_TERM_GRACE FM_ORPHAN_SWEEP_PROBE_SECS'
 
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
@@ -156,6 +157,8 @@ MYSQLD_MIN_AGE=${FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE:-7200}
 whole_number_setting FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE "$MYSQLD_MIN_AGE" 60 99999999 'a whole number of at least 60'
 TERM_GRACE=${FM_ORPHAN_SWEEP_TERM_GRACE:-10}
 whole_number_setting FM_ORPHAN_SWEEP_TERM_GRACE "$TERM_GRACE" 1 60 'a whole number from 1 to 60'
+PROBE_SECS=${FM_ORPHAN_SWEEP_PROBE_SECS:-5}
+whole_number_setting FM_ORPHAN_SWEEP_PROBE_SECS "$PROBE_SECS" 1 30 'a whole number from 1 to 30'
 
 # A run the watcher kills prints nothing, so the whole sweep has to fit inside its
 # per-check bound: evaluation, the grace, and the short wait after SIGKILL.
@@ -163,6 +166,9 @@ CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}
 case "$CHECK_TIMEOUT" in
   ''|*[!0-9]*|0) CHECK_TIMEOUT=30 ;;
 esac
+PROBE_MAX=$((CHECK_TIMEOUT / 3))
+[ "$PROBE_MAX" -ge 1 ] || PROBE_MAX=1
+[ "$PROBE_SECS" -le "$PROBE_MAX" ] || PROBE_SECS=$PROBE_MAX
 RESERVED_SECS=$((PROBE_SECS + KILL_WAIT_SECS + 2))
 GRACE_MAX=$((CHECK_TIMEOUT - RESERVED_SECS - 1))
 [ "$GRACE_MAX" -ge 1 ] || GRACE_MAX=1

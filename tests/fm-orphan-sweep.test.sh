@@ -14,6 +14,10 @@ set -u
 SWEEP="$ROOT/bin/fm-orphan-sweep.sh"
 CHECKPOINT="$ROOT/bin/fm-watch-checkpoint.sh"
 TMP_ROOT=$(fm_test_tmproot fm-orphan-sweep)
+# A loaded host can slow even a fake ps past the 5s default, which reads as a
+# blind sweep, so every case runs with the widest bound. Cases about the bound
+# narrow it themselves.
+export FM_ORPHAN_SWEEP_PROBE_SECS=30 FM_CHECK_TIMEOUT=300
 MY_UID=$(id -u)
 RUN=01M6NG9MYSZ2FVXZ0NAMPQ6YMT
 EVIDENCE=/var/folders/xx/T/no-mistakes-evidence
@@ -39,6 +43,7 @@ n=$(cat "$FAKE/ps.count" 2>/dev/null || echo 0)
 n=$((n + 1))
 printf '%s\n' "$n" > "$FAKE/ps.count"
 [ ! -e "$FAKE/ps.fail.$n" ] || exit 1
+[ ! -e "$FAKE/ps.delay.$n" ] || sleep "$(cat "$FAKE/ps.delay.$n")"
 while [ "$n" -gt 1 ] && [ ! -e "$FAKE/ps/$n" ]; do n=$((n - 1)); done
 cat "$FAKE/ps/$n"
 # A real table always holds at least the caller's own shell.
@@ -726,6 +731,31 @@ test_an_unreadable_process_table_stops_nothing_and_says_so_once() {
   pass "an unreadable process table stops nothing and is reported once"
 }
 
+test_the_probe_bound_decides_when_a_slow_table_is_unreadable() {
+  local out
+  new_world slowps
+  orphan_mysqld 4036
+  printf '6\n' > "$W/ps.delay.1"
+  out=$(sweep check)
+  assert_equals "-TERM 4036" "$(killed)" "a table read slower than the default bound did not sweep under a wider one"
+  assert_contains "$out" "stopped mysqld pid 4036" "the stop was not reported"
+
+  new_world slowps-narrow
+  orphan_mysqld 4037
+  printf '3\n' > "$W/ps.delay.1"
+  out=$(FM_ORPHAN_SWEEP_PROBE_SECS=1 sweep check)
+  assert_contains "$out" "process table could not be read" "a read over the bound was not a blind sweep"
+  assert_nothing_signalled "a read over the bound"
+
+  new_world slowps-cut
+  orphan_mysqld 4038
+  printf '3\n' > "$W/ps.delay.1"
+  out=$(FM_CHECK_TIMEOUT=3 sweep check)
+  assert_contains "$out" "process table could not be read" "the bound was not cut to fit the watcher's per-check bound"
+  assert_nothing_signalled "a read over the cut bound"
+  pass "the probe bound is settable, fails closed, and is cut to fit the per-check bound"
+}
+
 test_invalid_settings_and_actions_refuse() {
   local name value status
   new_world invalid
@@ -739,6 +769,8 @@ FM_ORPHAN_SWEEP_INTERVAL soon
 FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE 0
 FM_ORPHAN_SWEEP_TERM_GRACE 0
 FM_ORPHAN_SWEEP_TERM_GRACE 61
+FM_ORPHAN_SWEEP_PROBE_SECS 0
+FM_ORPHAN_SWEEP_PROBE_SECS 31
 EOF
   status=0
   FM_HOME="$W/home" "$SWEEP" nonsense >/dev/null 2>&1 || status=$?
@@ -782,7 +814,7 @@ test_armed_check_wakes_the_watcher() {
   new_world wake
   orphan_mysqld 4035
   FM_HOME="$W/home" "$SWEEP" arm >/dev/null || fail "could not arm the sweep"
-  env FM_HOME="$W/home" NM_HOME="$W/nm" FAKE="$W" PATH="$W/fakebin:$PATH" FM_CHECK_TIMEOUT=30 \
+  env FM_HOME="$W/home" NM_HOME="$W/nm" FAKE="$W" PATH="$W/fakebin:$PATH" \
     FM_ORPHAN_SWEEP_TERM_GRACE=1 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 \
     "$CHECKPOINT" --seconds 60 >"$W/out.txt" 2>"$W/err.txt" || status=$?
   expect_code 0 "$status" "watcher checkpoint exit"
@@ -826,6 +858,7 @@ test_files_it_cannot_prove_it_owned_stay
 test_the_audit_log_is_capped
 test_dry_run_changes_nothing_and_ignores_the_gate
 test_an_unreadable_process_table_stops_nothing_and_says_so_once
+test_the_probe_bound_decides_when_a_slow_table_is_unreadable
 test_invalid_settings_and_actions_refuse
 test_arm_registers_and_disarm_keeps_the_audit
 test_arm_refuses_a_symlink_at_the_shim_path

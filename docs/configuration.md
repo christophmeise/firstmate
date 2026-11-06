@@ -1531,6 +1531,7 @@ A sweep that stops nothing and finds nothing new is silent, and a report that do
 | `FM_ORPHAN_SWEEP_INTERVAL` | 1800 seconds | Time between sweeps whatever the watcher cadence; `0` sweeps on every run, other values must be 60..86400. |
 | `FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE` | 7200 seconds | Minimum age of a validation database before it may be stopped. |
 | `FM_ORPHAN_SWEEP_TERM_GRACE` | 10 seconds | Wait between SIGTERM and SIGKILL, cut down to fit `FM_CHECK_TIMEOUT`. |
+| `FM_ORPHAN_SWEEP_PROBE_SECS` | 5 seconds | Time allowed for one `ps`, `lsof`, or `sqlite3` read, 1..30, cut to a third of `FM_CHECK_TIMEOUT`; a read that overruns counts as unanswered, so nothing is stopped. |
 
 A check sees only the watcher's environment, so `arm` copies any of these that are set when it runs into the shim.
 
@@ -2451,6 +2452,7 @@ FM_MAIL_TIMEOUT=20   # mail-plane IMAP/SMTP socket timeout in seconds; invalid o
 FM_ORPHAN_SWEEP_INTERVAL=1800   # seconds between orphan process sweeps; 0 sweeps on every run, other values must be 60..86400
 FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE=7200   # seconds a validation database must have run before the sweep may stop it; at least 60
 FM_ORPHAN_SWEEP_TERM_GRACE=10   # 1..60 seconds between SIGTERM and SIGKILL; cut to fit FM_CHECK_TIMEOUT
+FM_ORPHAN_SWEEP_PROBE_SECS=5   # 1..30 seconds allowed for one ps, lsof, or sqlite3 read; cut to a third of FM_CHECK_TIMEOUT
 FM_ORPHAN_SWEEP_NOW=     # test override for the orphan sweep's interval and CPU-sample clock
 FM_TOOL_UPDATE_INTERVAL=900   # seconds between watched-tool probe sweeps; 0 probes on every run, other values must be 60..86400
 FM_TOOL_UPDATE_PROBE_SECS=5   # 1..30 seconds allowed for one version or git probe
