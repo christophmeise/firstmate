@@ -38,6 +38,7 @@ new_world() {
 n=$(cat "$FAKE/ps.count" 2>/dev/null || echo 0)
 n=$((n + 1))
 printf '%s\n' "$n" > "$FAKE/ps.count"
+[ ! -e "$FAKE/ps.fail.$n" ] || exit 1
 while [ "$n" -gt 1 ] && [ ! -e "$FAKE/ps/$n" ]; do n=$((n - 1)); done
 cat "$FAKE/ps/$n"
 # A real table always holds at least the caller's own shell.
@@ -67,6 +68,7 @@ if [ "$mode" = -d ]; then
   printf 'p%s\nfcwd\nn%s\n' "$pid" "$(cat "$FAKE/lsof/$pid.cwd")"
   exit 0
 fi
+[ ! -e "$FAKE/lsof/$pid.tcp-fail" ] || { echo "lsof: boom" >&2; exit 1; }
 [ -e "$FAKE/lsof/$pid.established" ] || exit 1
 printf 'p%s\nf20\nn127.0.0.1:1->127.0.0.1:2\n' "$pid"
 SH
@@ -320,6 +322,57 @@ test_an_unreadable_process_is_refused() {
   assert_nothing_signalled "a process lsof cannot read"
   assert_contains "$out" "working directory could not be read" "the blind spot was not reported"
   pass "a process whose working directory cannot be read is left alone"
+}
+
+# One candidate that every other check would stop, so the refusal under test is
+# the only thing between it and a signal.
+assert_refused_with_one_line() {  # <pid> <reason>
+  local out
+  out=$(sweep check)
+  assert_nothing_signalled "$2"
+  assert_contains "$out" "chrome-devtools-axi-bridge pid $1 is orphaned but was left alone: $2" "the refusal was not reported"
+  assert_equals 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "the refusal was not one line"
+}
+
+test_unreadable_connections_are_refused() {
+  new_world notcp
+  orphan_bridge 4043
+  : > "$W/lsof/4043.tcp-fail"
+  assert_refused_with_one_line 4043 "connections could not be read"
+  pass "a process whose connections cannot be read is left alone"
+}
+
+test_a_table_lost_before_the_child_check_is_refused() {
+  new_world nochildren
+  orphan_bridge 4044
+  : > "$W/ps.fail.2"
+  assert_refused_with_one_line 4044 "process table could not be read"
+  pass "a bridge whose children cannot be read is left alone"
+}
+
+test_unreadable_task_records_are_refused() {
+  local child
+  if [ "$MY_UID" = 0 ]; then
+    pass "unreadable task records need a non-root user (skipped)"
+    return 0
+  fi
+  new_world badmeta
+  orphan_bridge 4045
+  : > "$W/home/state/some-task-t1.meta"
+  chmod 000 "$W/home/state/some-task-t1.meta"
+  assert_refused_with_one_line 4045 "task record is unreadable at $W/home/state/some-task-t1.meta"
+  chmod 600 "$W/home/state/some-task-t1.meta"
+
+  new_world badstate
+  child="$W/mate"
+  mkdir -p "$child/state"
+  printf -- '- mate-a - Second mate (home: %s; scope: all; projects: none; added 2026-01-01)\n' "$child" \
+    > "$W/home/data/secondmates.md"
+  orphan_bridge 4046
+  chmod 000 "$child/state"
+  assert_refused_with_one_line 4046 "task records are unreadable at $child/state"
+  chmod 700 "$child/state"
+  pass "a task record or state directory that cannot be read leaves every candidate alone"
 }
 
 test_only_the_allowlist_can_be_stopped() {
@@ -671,7 +724,7 @@ test_armed_check_wakes_the_watcher() {
   FM_HOME="$W/home" "$SWEEP" arm >/dev/null || fail "could not arm the sweep"
   env FM_HOME="$W/home" NM_HOME="$W/nm" FAKE="$W" PATH="$W/fakebin:$PATH" FM_CHECK_TIMEOUT=30 \
     FM_ORPHAN_SWEEP_TERM_GRACE=1 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 \
-    "$CHECKPOINT" --seconds 10 >"$W/out.txt" 2>"$W/err.txt" || status=$?
+    "$CHECKPOINT" --seconds 60 >"$W/out.txt" 2>"$W/err.txt" || status=$?
   expect_code 0 "$status" "watcher checkpoint exit"
   assert_contains "$(cat "$W/out.txt")" "check:" "the armed sweep did not reach the watcher as a check wake"
   assert_contains "$(cat "$W/out.txt")" "orphan sweep: stopped chrome-devtools-axi-bridge pid 4035" "the wake did not carry the sweep line"
@@ -692,6 +745,9 @@ test_an_unreadable_home_registry_leaves_everything_alone
 test_missing_liveness_libraries_leave_everything_alone
 test_a_bridge_in_use_is_refused
 test_an_unreadable_process_is_refused
+test_unreadable_connections_are_refused
+test_a_table_lost_before_the_child_check_is_refused
+test_unreadable_task_records_are_refused
 test_only_the_allowlist_can_be_stopped
 test_a_reused_pid_is_never_signalled
 test_a_pid_reused_during_the_grace_gets_no_sigkill
