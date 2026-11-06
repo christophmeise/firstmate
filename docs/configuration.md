@@ -1507,6 +1507,34 @@ Arm the check once per home with `bin/fm-tool-update-check.sh arm`.
 - So a budget larger than that timeout allows is cut down to what fits instead of being refused, and the cut is reported in the report line.
 - A budget that is not a whole number from 1 to 120 is still refused outright.
 
+## Orphan process sweep (state/orphan-sweep.check.sh)
+
+[`bin/fm-orphan-sweep.sh`](../bin/fm-orphan-sweep.sh) stops orphaned no-mistakes validation databases, and reports, without acting, any other process outside operating-system paths that has kept more than 80% of a core busy for over an hour.
+It is off until a home arms it, because it is the one check that signals processes.
+The sweep covers every process of the current user on this machine, so arm it in one home per machine.
+
+- `bin/fm-orphan-sweep.sh arm` writes `state/orphan-sweep.check.sh` and binds it with `bin/fm-check-register.sh`, so the watcher runs it; the shim lives in `state/`, so the home stays armed across sessions and session start does not re-arm it.
+- Registering it is a reason to watch on the same terms as the [watched-tool check](#watched-tool-updates-configwatched-toolsjson).
+- `bin/fm-orphan-sweep.sh --dry-run` prints what one sweep would stop, leave, and report, and changes nothing.
+- `bin/fm-orphan-sweep.sh disarm` removes the shim, its binding, and `state/.orphan-sweep`, and keeps the audit log.
+
+It stops only one class: a `mysqld` serving a no-mistakes evidence directory whose run is recorded as finished.
+`chrome-devtools-axi` bridges belong to `bin/fm-automation-browser-reap.sh`, which the watcher runs, and this sweep never signals one.
+The database must also be parented by init, past its age threshold, outside every local home's recorded task worktree and temp directory, and holding no established connection; a question that cannot be answered leaves the process alone and is reported once.
+The script header owns the exact match, the signal and identity mechanics, and the evidence a new class needs.
+
+Each stop is appended to `state/orphan-sweep.log`, capped at 64 KiB, and `state/.orphan-sweep` holds the interval gate, the once-per-process report keys, and CPU samples.
+A sweep that stops nothing and finds nothing new is silent, and a report that does not fit the one capped line waits for the next sweep.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `FM_ORPHAN_SWEEP_INTERVAL` | 1800 seconds | Time between sweeps whatever the watcher cadence; `0` sweeps on every run, other values must be 60..86400. |
+| `FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE` | 7200 seconds | Minimum age of a validation database before it may be stopped. |
+| `FM_ORPHAN_SWEEP_TERM_GRACE` | 10 seconds | Wait between SIGTERM and SIGKILL, cut down to fit `FM_CHECK_TIMEOUT`. |
+| `FM_ORPHAN_SWEEP_PROBE_SECS` | 5 seconds | Time allowed for one `ps`, `lsof`, or `sqlite3` read, 1..30, cut to a third of `FM_CHECK_TIMEOUT`; a read that overruns counts as unanswered, so nothing is stopped. |
+
+A check sees only the watcher's environment, so `arm` copies any of these that are set when it runs into the shim.
+
 ## Mail plane (.env)
 
 The mail plane (bin/fm-mail.sh) reads unseen IMAP messages and sends one SMTP message.
@@ -2421,6 +2449,11 @@ FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_MAIL_CHECK_BUDGET=15   # seconds allowed for one standing mail poll; valid 5..25, cut to fit FM_CHECK_TIMEOUT
 FM_MAIL_POLL_MAX_WAKES=20   # per-poll wake cap for a mail poll; valid 1..200, keeps a flood from flooding firstmate
 FM_MAIL_TIMEOUT=20   # mail-plane IMAP/SMTP socket timeout in seconds; invalid or non-positive values become 20
+FM_ORPHAN_SWEEP_INTERVAL=1800   # seconds between orphan process sweeps; 0 sweeps on every run, other values must be 60..86400
+FM_ORPHAN_SWEEP_MYSQLD_MIN_AGE=7200   # seconds a validation database must have run before the sweep may stop it; at least 60
+FM_ORPHAN_SWEEP_TERM_GRACE=10   # 1..60 seconds between SIGTERM and SIGKILL; cut to fit FM_CHECK_TIMEOUT
+FM_ORPHAN_SWEEP_PROBE_SECS=5   # 1..30 seconds allowed for one ps, lsof, or sqlite3 read; cut to a third of FM_CHECK_TIMEOUT
+FM_ORPHAN_SWEEP_NOW=     # test override for the orphan sweep's interval and CPU-sample clock
 FM_TOOL_UPDATE_INTERVAL=900   # seconds between watched-tool probe sweeps; 0 probes on every run, other values must be 60..86400
 FM_TOOL_UPDATE_PROBE_SECS=5   # 1..30 seconds allowed for one version or git probe
 FM_TOOL_UPDATE_BUDGET_SECS=20   # 1..120 seconds allowed for a whole watched-tool sweep; cut to fit FM_CHECK_TIMEOUT, and the cut is reported
