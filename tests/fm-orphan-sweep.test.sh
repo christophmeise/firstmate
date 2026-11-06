@@ -528,6 +528,75 @@ test_a_refused_hot_orphan_still_gets_a_look() {
   pass "a hot orphan the sweep may not stop is still surfaced"
 }
 
+test_reports_over_the_line_cap_wait_for_a_later_sweep() {
+  local pid out all='' sweeps=0 count
+  new_world hotflood
+  for pid in $(seq 7100 7119); do
+    row 1 "$pid" 500 '03:00:00' '170:00.00' "/usr/local/bin/python3 /opt/jobs/a-long-worker-path/crunch-$pid.py --with-a-long-argument"
+  done
+  out=$(sweep check)
+  while [ -n "$out" ]; do
+    sweeps=$((sweeps + 1))
+    [ "$sweeps" -le 6 ] || fail "the reports never drained"
+    assert_equals 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "a report was not one line"
+    [ "${#out}" -le 1000 ] || fail "a report ran to ${#out} characters"
+    all="$all$out"$'\n'
+    out=$(sweep check)
+  done
+  [ "$sweeps" -ge 2 ] || fail "the table did not overflow the cap, so this proves nothing"
+  for pid in $(seq 7100 7119); do
+    count=$(printf '%s' "$all" | grep -oF "(pid $pid) has used over 80% of a core for 3h, left alone" | wc -l | tr -d ' ')
+    assert_equals 1 "$count" "pid $pid was not reported whole exactly once"
+  done
+  assert_equals 20 "$(printf '%s' "$all" | grep -oF 'left alone' | wc -l | tr -d ' ')" "an entry was reported more than once"
+  assert_nothing_signalled "a table of hot processes"
+  pass "reports over the line cap arrive whole on later sweeps, each exactly once"
+}
+
+test_an_entry_longer_than_the_cap_is_reported_once_shortened() {
+  local out long
+  new_world longentry
+  long=/$(awk 'BEGIN { for (i = 0; i < 1200; i++) printf "a" }')
+  printf -- '- mate-a - Second mate (home: %s; scope: all; projects: none; added 2026-01-01)\n' "$long" \
+    > "$W/home/data/secondmates.md"
+  orphan_bridge 4047
+  out=$(sweep check)
+  assert_nothing_signalled "an unavailable home"
+  assert_contains "$out" "chrome-devtools-axi-bridge pid 4047 is orphaned but was left alone" "an entry too long for any line was never reported"
+  [ "${#out}" -le 1000 ] || fail "the report ran to ${#out} characters"
+  assert_equals "" "$(sweep check)" "the shortened entry was reported twice"
+  pass "an entry too long for any line is shortened and reported once"
+}
+
+test_a_stop_keeps_the_line_and_the_reports_it_leaves_no_room_for_wait() {
+  local pid out next waiting=
+  new_world stopflood
+  orphan_bridge 4048
+  for pid in $(seq 7200 7219); do
+    row 1 "$pid" 500 '03:00:00' '170:00.00' "/usr/local/bin/python3 /opt/jobs/a-long-worker-path/crunch-$pid.py --with-a-long-argument"
+  done
+  out=$(sweep check)
+  assert_equals "-TERM 4048" "$(killed)" "the bridge was not stopped"
+  assert_contains "$out" "orphan sweep: stopped chrome-devtools-axi-bridge pid 4048 (SIGTERM); look: " "the stop did not lead the line"
+  [ "${#out}" -le 1000 ] || fail "the report ran to ${#out} characters"
+  assert_contains "$out" ", left alone" "the stop left no report on the line"
+  case "$out" in
+    *', left alone') ;;
+    *) fail "the line ended on a cut entry: $out" ;;
+  esac
+  for pid in $(seq 7200 7219); do
+    case "$out" in
+      *"(pid $pid)"*) ;;
+      *) waiting=$pid; break ;;
+    esac
+  done
+  [ -n "$waiting" ] || fail "the table did not overflow the cap, so this proves nothing"
+  next=$(sweep check)
+  assert_not_contains "$next" "stopped" "the stop was reported again"
+  assert_contains "$next" "(pid $waiting)" "a report that did not fit beside the stop was lost"
+  pass "a stop leads the line and reports that do not fit beside it wait"
+}
+
 test_owned_files_are_removed_only_when_safe() {
   local data sock pidfile
   new_world cleanup
@@ -757,6 +826,9 @@ test_a_hot_unknown_process_is_reported_once_and_untouched
 test_cpu_is_measured_between_sweeps
 test_system_and_cool_processes_are_not_reported
 test_a_refused_hot_orphan_still_gets_a_look
+test_reports_over_the_line_cap_wait_for_a_later_sweep
+test_an_entry_longer_than_the_cap_is_reported_once_shortened
+test_a_stop_keeps_the_line_and_the_reports_it_leaves_no_room_for_wait
 test_owned_files_are_removed_only_when_safe
 test_the_incident_command_line_is_matched_and_cleaned_up
 test_files_it_cannot_prove_it_owned_stay

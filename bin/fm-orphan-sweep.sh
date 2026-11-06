@@ -100,6 +100,9 @@ CHECK_TRUST="$STATE/$CHECK_ID.check-trust"
 REGISTER_BIN="$SCRIPT_DIR/fm-check-register.sh"
 RECORD_SCHEMA=fm-orphan-sweep-v1
 MAX_LINE=1000
+REPORT_PREFIX='orphan sweep: '
+REPORT_LOOK='look: '
+REPORT_TEXT=
 AUDIT_MAX_BYTES=65536
 PROBE_SECS=5
 KILL_WAIT_SECS=3
@@ -564,22 +567,49 @@ audit_append() {  # <outcome> <class> <pid> <start> <signal> <why> <removed> <co
 
 DRY_RUN=0
 STOPPED=
-LOOK=
+LOOK_QUEUE=
 NEW_SEEN=
 
 add_stopped() { STOPPED="${STOPPED:+$STOPPED, }$1"; }
 
-# Report <text> once for <key>, a pid|start|kind or tool key.
+# Queue <text> to be reported once for <key>, a pid|start|kind or tool key. A
+# text too long for a line of its own is shortened here, so every queued entry
+# can fit on some sweep's line.
 look_once() {  # <key> <text>
-  NEW_SEEN="$NEW_SEEN$1"$'\n'
   case $'\n'"$RECORD_SEEN" in
-    *$'\n'"$1"$'\n'*) return 0 ;;
+    *$'\n'"$1"$'\n'*)
+      NEW_SEEN="$NEW_SEEN$1"$'\n'
+      return 0
+      ;;
   esac
   if [ "$DRY_RUN" = 1 ]; then
     printf 'would report: %s\n' "$2"
-  else
-    LOOK="${LOOK:+$LOOK; }$2"
+    return 0
   fi
+  fm_cap_line_var "${2//$'\n'/ }" "$((MAX_LINE - ${#REPORT_PREFIX} - ${#REPORT_LOOK}))"
+  LOOK_QUEUE="$LOOK_QUEUE$1"$'\t'"$FM_LINE_CAP_LINE"$'\n'
+}
+
+# Prints the one report line, if there is anything to say. A queued entry goes on
+# the line whole or not at all, and only an entry on the line counts as reported,
+# so one that does not fit is queued again by the next sweep that still sees it.
+report_line() {
+  local head=$REPORT_PREFIX lead key entry candidate looks=''
+  [ -z "$STOPPED" ] || head="${head}stopped $STOPPED"
+  lead="$head${STOPPED:+; }$REPORT_LOOK"
+  while IFS=$'\t' read -r key entry; do
+    [ -n "$key" ] || continue
+    candidate="${looks:+$looks; }$entry"
+    [ "$((${#lead} + ${#candidate}))" -le "$MAX_LINE" ] || continue
+    looks=$candidate
+    NEW_SEEN="$NEW_SEEN$key"$'\n'
+  done <<<"$LOOK_QUEUE"
+  [ -n "$STOPPED$looks" ] || return 0
+  if [ -n "$looks" ]; then
+    head="$lead$looks"
+  fi
+  fm_cap_line_var "$head" "$MAX_LINE"
+  REPORT_TEXT=$FM_LINE_CAP_LINE
 }
 
 # Keys for processes still running stay reported, so a process that dips and
@@ -737,8 +767,10 @@ action_check() {
 
   if ! snapshot; then
     look_once "ps" "the process table could not be read, so nothing was swept"
-    [ "$DRY_RUN" = 1 ] || record_write "$RECORD_SEEN$NEW_SEEN" "$RECORD_CPU" || true
-    [ -z "$LOOK" ] || printf 'orphan sweep: look: %s\n' "$LOOK"
+    [ "$DRY_RUN" = 0 ] || return 0
+    report_line
+    [ -z "$REPORT_TEXT" ] || printf '%s\n' "$REPORT_TEXT"
+    record_write "$(printf '%s%s' "$RECORD_SEEN" "$NEW_SEEN" | LC_ALL=C sort -u)" "$RECORD_CPU" || true
     return 0
   fi
 
@@ -755,15 +787,10 @@ action_check() {
 
   [ "$DRY_RUN" = 0 ] || return 0
 
-  text=
-  [ -z "$STOPPED" ] || text="stopped $STOPPED"
-  [ -z "$LOOK" ] || text="${text:+$text; }look: $LOOK"
   # Report before recording, so a record that cannot be written costs a repeated
   # report rather than a lost one.
-  if [ -n "$text" ]; then
-    fm_cap_line_var "orphan sweep: $text" "$MAX_LINE"
-    printf '%s\n' "$FM_LINE_CAP_LINE"
-  fi
+  report_line
+  [ -z "$REPORT_TEXT" ] || printf '%s\n' "$REPORT_TEXT"
   record_write "$(printf '%s%s' "$NEW_SEEN" "$(carried_seen_keys)" | LC_ALL=C sort -u)" "$cpu_rows" || true
   return 0
 }

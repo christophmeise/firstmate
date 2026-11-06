@@ -1523,7 +1523,7 @@ Either one must also be parented by init, past its age threshold, outside every 
 The script header owns the exact match, the signal and identity mechanics, and the evidence a new class needs.
 
 Each stop is appended to `state/orphan-sweep.log`, capped at 64 KiB, and `state/.orphan-sweep` holds the interval gate, the once-per-process report keys, and CPU samples.
-A sweep that stops nothing and finds nothing new is silent.
+A sweep that stops nothing and finds nothing new is silent, and a report that does not fit the one capped line waits for the next sweep.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
