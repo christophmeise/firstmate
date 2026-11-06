@@ -468,7 +468,8 @@ remove_owned_files() {  # <pid> <command>
   fi
   if [ -n "$pidfile" ] && path_is_unreferenced "$pidfile"; then
     case "$pidfile" in
-      "$datadir"/*)
+      /tmp/nm*/*|/private/tmp/nm*/*) ;;
+      /tmp/nm*.pid|/private/tmp/nm*.pid|"$datadir"/*)
         if [ -f "$pidfile" ] && [ ! -L "$pidfile" ] && [ -O "$pidfile" ]; then
           IFS= read -r recorded < "$pidfile" || true
           [ "${recorded:-}" != "$pid" ] || { rm -f -- "$pidfile" && printf '%s\n' "$pidfile"; }

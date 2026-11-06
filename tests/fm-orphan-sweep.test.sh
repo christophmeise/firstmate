@@ -473,6 +473,32 @@ test_owned_files_are_removed_only_when_safe() {
   pass "a stopped database's socket and pid files are removed and its evidence is kept"
 }
 
+# The exact shape of the process from the incident: a bare argv[0], a $TMPDIR
+# ending in a slash that doubles the separator, a TCP port, and both the socket
+# and the pid file directly under /tmp rather than in the data directory.
+test_the_incident_command_line_is_matched_and_cleaned_up() {
+  local sock pidfile command out
+  new_world incident
+  sock="/tmp/nmfmtest$$i.sock"
+  pidfile="/tmp/nmfmtest$$i.pid"
+  command="mysqld --no-defaults --datadir=/var/folders/ds/xx/T//no-mistakes-evidence/$RUN/mysql/data --port=33119 --bind-address=127.0.0.1 --mysqlx=OFF --socket=$sock --pid-file=$pidfile --daemonize"
+  perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Local => $ARGV[0], Listen => 1) or die' "$sock"
+  printf '4040\n' > "$sock.lock"
+  printf '4040\n' > "$pidfile"
+  row 1 4040 1 '22:00:00' '1320:00.00' "$command"
+  printf '/var/folders/ds/xx/T/no-mistakes-evidence/%s/mysql/data\n' "$RUN" > "$W/lsof/4040.cwd"
+  printf 'completed\n' > "$W/runs/$RUN"
+  : > "$W/ignore-term.4040"
+  out=$(sweep check)
+  assert_equals $'-TERM 4040\n-KILL 4040' "$(killed)" "the incident process was not stopped by SIGTERM then SIGKILL"
+  assert_contains "$out" "stopped mysqld pid 4040 (SIGKILL)" "the stop was not reported"
+  assert_not_contains "$out" "of a core" "a stopped process was also reported as hot"
+  assert_absent "$sock" "the incident socket stayed"
+  assert_absent "$sock.lock" "the incident socket lock stayed"
+  assert_absent "$pidfile" "the incident pid file stayed"
+  pass "the incident's exact command line is matched, stopped, and cleaned up"
+}
+
 test_files_it_cannot_prove_it_owned_stay() {
   local data
   new_world cleanup-refusals
@@ -650,6 +676,7 @@ fm_test_run \
   test_system_and_cool_processes_are_not_reported \
   test_a_refused_hot_orphan_still_gets_a_look \
   test_owned_files_are_removed_only_when_safe \
+  test_the_incident_command_line_is_matched_and_cleaned_up \
   test_files_it_cannot_prove_it_owned_stay \
   test_the_audit_log_is_capped \
   test_dry_run_changes_nothing_and_ignores_the_gate \
